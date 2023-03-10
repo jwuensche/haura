@@ -2,6 +2,7 @@
 
 use crate::size::{Size, StaticSize};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use speedy::{Readable, Writable};
 use std::{error::Error, fmt, hash::Hasher, iter::once};
 use twox_hash;
 
@@ -67,7 +68,7 @@ impl Error for ChecksumError {
 /// `XxHash` contains a digest of `xxHash`
 /// which is an "extremely fast non-cryptographic hash algorithm"
 /// (<https://github.com/Cyan4973/xxHash>)
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Readable, Writable)]
 pub struct XxHash(u64);
 
 impl StaticSize for XxHash {

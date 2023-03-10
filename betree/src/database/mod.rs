@@ -28,6 +28,7 @@ use itertools::Itertools;
 use parking_lot::{Mutex, RwLock};
 use seqlock::SeqLock;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use speedy::{Readable, Writable};
 use std::{
     collections::HashMap,
     iter::FromIterator,
@@ -705,7 +706,19 @@ impl DeadListData {
 
 /// Internal identifier for a dataset
 #[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    Readable,
+    Writable,
 )]
 pub struct DatasetId(u64);
 
@@ -800,7 +813,20 @@ impl<P: DeserializeOwned> DatasetData<P> {
 }
 
 /// Internal identifier of a generation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    Readable,
+    Writable,
+)]
 pub struct Generation(u64);
 
 impl StaticSize for Generation {

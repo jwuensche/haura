@@ -2,6 +2,7 @@ use crate::size::StaticSize;
 
 use super::BLOCK_SIZE;
 use serde::{Deserialize, Serialize};
+use speedy::{Readable, Writable};
 use std::{
     iter::Sum,
     ops::{Add, AddAssign, Div, Mul, MulAssign, Rem, Sub},
@@ -9,7 +10,20 @@ use std::{
 
 /// A unit which represents a number of bytes which are a multiple of
 /// `BLOCK_SIZE`.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    Readable,
+    Writable,
+)]
 #[serde(transparent)]
 pub struct Block<T: Uint>(pub T);
 

@@ -1,8 +1,9 @@
 use crate::vdev::Block;
 use serde::{Deserialize, Serialize};
+use speedy::{Readable, Writable};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Readable, Writable)]
 /// Space information representation for a singular storage tier.
 pub struct StorageInfo {
     /// Remaining free storage in blocks.

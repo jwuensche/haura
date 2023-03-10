@@ -1,10 +1,11 @@
 use crate::{size::StaticSize, vdev::Block};
 use serde::{Deserialize, Serialize};
+use speedy::{Readable, Writable};
 use std::{fmt, mem};
 
 /// 2-bit storage class, 10-bit disk ID, 52-bit block offset (see
 /// [`BLOCK_SIZE`](../vdev/constant.BLOCK_SIZE.html))
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Readable, Writable)]
 pub struct DiskOffset(u64);
 
 const MASK_STORAGE_CLASS: u64 = ((1 << 2) - 1) << (10 + 52);

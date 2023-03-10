@@ -8,8 +8,9 @@ use crate::{
     StoragePreference,
 };
 use serde::{Deserialize, Serialize};
+use speedy::{Readable, Writable};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Readable, Writable)]
 /// A pointer to an on-disk serialized object.
 pub struct ObjectPointer<D> {
     pub(super) decompression_tag: DecompressionTag,

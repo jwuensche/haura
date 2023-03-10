@@ -9,6 +9,8 @@
 //!
 //! [MutBuf] does not support growing with [io::Write] because the semantics of growing an inner split buffer are unclear.
 
+use speedy::{Context, LittleEndian, Writer};
+
 use crate::vdev::{Block, BLOCK_SIZE};
 use std::{
     alloc::{self, Layout},
@@ -265,6 +267,36 @@ impl BufWrite {
         Buf::from_aligned(AlignedBuf {
             buf: Arc::new(UnsafeCell::new(self.buf)),
         })
+    }
+
+    pub fn writer<'a>(&'a mut self) -> BufWriteWriter<'a> {
+        BufWriteWriter {
+            buf: self,
+            ctx: LittleEndian {},
+        }
+    }
+}
+
+pub struct BufWriteWriter<'a> {
+    buf: &'a mut BufWrite,
+    ctx: LittleEndian,
+}
+
+impl<'a> Writer<LittleEndian> for BufWriteWriter<'a> {
+    fn write_bytes(&mut self, slice: &[u8]) -> Result<(), speedy::Error> {
+        use std::io::Write;
+        self.buf
+            .write(slice)
+            .map(|_| ())
+            .map_err(|_| speedy::Error::custom("Writing to AlignedStorage failed."))
+    }
+
+    fn context(&self) -> &LittleEndian {
+        &self.ctx
+    }
+
+    fn context_mut(&mut self) -> &mut LittleEndian {
+        &mut self.ctx
     }
 }
 

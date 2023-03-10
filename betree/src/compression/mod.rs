@@ -8,6 +8,7 @@ use crate::{
     vdev::Block,
 };
 use serde::{Deserialize, Serialize};
+use speedy::{Readable, Writable};
 use std::{fmt::Debug, io::Write, mem};
 
 mod errors;
@@ -35,7 +36,7 @@ impl CompressionConfiguration {
 /// method. This differs from a CompressionConfiguration, in that it is not configurable, as
 /// all methods will decompress just fine without knowing at which compression level it was
 /// originally written, so there's no advantage in storing the compression level with each object.
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Readable, Writable)]
 #[repr(u8)]
 pub enum DecompressionTag {
     None,

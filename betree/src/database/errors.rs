@@ -27,6 +27,11 @@ pub enum Error {
         #[from]
         source: bincode::Error,
     },
+    #[error("Serializing into the binary format failed. This is an internal error.")]
+    SpeedySerializationError {
+        #[from]
+        source: speedy::Error,
+    },
     #[error("String based configuration was not valid.")]
     ConfigurationError {
         #[from]

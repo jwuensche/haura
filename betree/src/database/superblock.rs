@@ -8,13 +8,14 @@ use crate::{
 };
 use bincode::{deserialize, serialize_into};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use speedy::{LittleEndian, Readable, Writable};
 use std::io::{self, Seek};
 
 static MAGIC: &[u8] = b"HEAFSv3\0\n";
 
 /// A superblock contains the location of the root tree,
 /// and is read during database initialisation.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Readable, Writable)]
 pub struct Superblock<P> {
     magic: [u8; 9],
     pub(crate) root_ptr: P,
@@ -27,24 +28,44 @@ fn checksum(b: &[u8]) -> XxHash {
     state.finish()
 }
 
-impl<P: DeserializeOwned> Superblock<P> {
+impl<'a, P: Readable<'a, LittleEndian>> Superblock<P> {
     /// Interpret a byte slice as a database superblock.
     /// Errors if the supposed superblock doesn't begin with
     /// a specific version byte sequence (currently `b"HEAFSv3\0\n", but
     /// this sequence is explicitly not part of the stability guarantees),
     /// or the contained checksum doesn't match the actual checksum of the superblock.
-    pub fn unpack(b: &[u8]) -> Result<Superblock<P>> {
+    pub fn unpack(b: &'a [u8]) -> Result<Superblock<P>> {
         let checksum_size = XxHash::static_size();
         let correct_checksum = checksum(&b[..b.len() - checksum_size]);
-        let actual_checksum = deserialize(&b[b.len() - checksum_size..])?;
+        let actual_checksum = XxHash::read_from_buffer(&b[b.len() - checksum_size..])?;
         if correct_checksum != actual_checksum {
             return Err(Error::InvalidSuperblock);
         }
-        let this: Self = deserialize(b)?;
+        let this: Self = Self::read_from_buffer(b)?;
         if this.magic != MAGIC {
             return Err(Error::InvalidSuperblock);
         }
         Ok(this)
+    }
+}
+
+impl<P: Writable<LittleEndian>> Superblock<P> {
+    fn pack(p: &P, tiers: &[StorageInfo; NUM_STORAGE_CLASSES]) -> Result<Buf> {
+        let mut data = BufWrite::with_capacity(Block(1));
+        {
+            let mut this = Superblock {
+                magic: [0; 9],
+                root_ptr: p,
+                tiers: *tiers,
+            };
+            this.magic.copy_from_slice(MAGIC);
+            this.write_to(&mut data.writer())?;
+        }
+        let checksum_size = XxHash::static_size();
+        data.seek(io::SeekFrom::End(-i64::from(checksum_size as u32)))?;
+        let checksum = checksum(&data.as_ref()[..BLOCK_SIZE - checksum_size]);
+        checksum.write_to(&mut data.writer())?;
+        Ok(data.into_buf())
     }
 }
 
@@ -88,22 +109,38 @@ impl Superblock<super::ObjectPointer> {
     }
 }
 
-impl<P: Serialize> Superblock<P> {
-    fn pack(p: &P, tiers: &[StorageInfo; NUM_STORAGE_CLASSES]) -> Result<Buf> {
-        let mut data = BufWrite::with_capacity(Block(1));
-        {
-            let mut this = Superblock {
-                magic: [0; 9],
-                root_ptr: p,
-                tiers: *tiers,
-            };
-            this.magic.copy_from_slice(MAGIC);
-            serialize_into(&mut data, &this)?;
-        }
-        let checksum_size = XxHash::static_size();
-        data.seek(io::SeekFrom::End(-i64::from(checksum_size as u32)))?;
-        let checksum = checksum(&data.as_ref()[..BLOCK_SIZE - checksum_size]);
-        serialize_into(&mut data, &checksum)?;
-        Ok(data.into_buf())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_ptr() -> impl Writable<LittleEndian> + Readable<'static, LittleEndian> {
+        0u64
+    }
+
+    #[test]
+    fn serialize_successful() {
+        let p = dummy_ptr();
+        Superblock::pack(
+            &p,
+            &[StorageInfo {
+                total: Block(0),
+                free: Block(0),
+            }; NUM_STORAGE_CLASSES],
+        )
+        .expect("Serialize Failed.");
+    }
+
+    #[test]
+    fn deserialize_successful() {
+        let p = dummy_ptr();
+        Superblock::pack(
+            &p,
+            &[StorageInfo {
+                total: Block(0),
+                free: Block(0),
+            }; NUM_STORAGE_CLASSES],
+        )
+        .and_then(|buf| Superblock::<u64>::unpack(&buf))
+        .expect("Serialization Pipeline Failed.");
     }
 }
