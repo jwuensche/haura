@@ -6,8 +6,6 @@ use crate::{
     storage_pool::{StoragePoolLayer, NUM_STORAGE_CLASSES},
     vdev::{Block, BLOCK_SIZE},
 };
-use bincode::{deserialize, serialize_into};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use speedy::{LittleEndian, Readable, Writable};
 use std::io::{self, Seek};
 
@@ -15,7 +13,7 @@ static MAGIC: &[u8] = b"HEAFSv3\0\n";
 
 /// A superblock contains the location of the root tree,
 /// and is read during database initialisation.
-#[derive(Serialize, Deserialize, Debug, Readable, Writable)]
+#[derive(Debug, Readable, Writable)]
 pub struct Superblock<P> {
     magic: [u8; 9],
     pub(crate) root_ptr: P,
