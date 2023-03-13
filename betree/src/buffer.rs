@@ -9,7 +9,7 @@
 //!
 //! [MutBuf] does not support growing with [io::Write] because the semantics of growing an inner split buffer are unclear.
 
-use speedy::{Context, LittleEndian, Writer};
+use speedy::{LittleEndian, Writer};
 
 use crate::vdev::{Block, BLOCK_SIZE};
 use std::{
@@ -269,6 +269,8 @@ impl BufWrite {
         })
     }
 
+    /// Returns a speedy compatible interface wrapper for the BufWrite
+    /// std::io::Write interface.
     pub fn writer<'a>(&'a mut self) -> BufWriteWriter<'a> {
         BufWriteWriter {
             buf: self,
@@ -277,6 +279,9 @@ impl BufWrite {
     }
 }
 
+/// A convenience wrapper for the speedy serialization.  Note that specific
+/// errors are swallowed by this interface due to speedy restrictions. Only the
+/// display version will be returned.
 pub struct BufWriteWriter<'a> {
     buf: &'a mut BufWrite,
     ctx: LittleEndian,
@@ -288,7 +293,7 @@ impl<'a> Writer<LittleEndian> for BufWriteWriter<'a> {
         self.buf
             .write(slice)
             .map(|_| ())
-            .map_err(|_| speedy::Error::custom("Writing to AlignedStorage failed."))
+            .map_err(|e| speedy::Error::custom(format!("{e}")))
     }
 
     fn context(&self) -> &LittleEndian {
