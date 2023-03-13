@@ -248,6 +248,7 @@ pub struct MutBuf {
 pub struct BufWrite {
     buf: AlignedStorage,
     size: u32,
+    endianess: LittleEndian,
 }
 
 impl BufWrite {
@@ -257,6 +258,7 @@ impl BufWrite {
         Self {
             buf: AlignedStorage::zeroed(capacity),
             size: 0,
+            endianess: LittleEndian {  },
         }
     }
 
@@ -268,40 +270,21 @@ impl BufWrite {
             buf: Arc::new(UnsafeCell::new(self.buf)),
         })
     }
-
-    /// Returns a speedy compatible interface wrapper for the BufWrite
-    /// std::io::Write interface.
-    pub fn writer<'a>(&'a mut self) -> BufWriteWriter<'a> {
-        BufWriteWriter {
-            buf: self,
-            ctx: LittleEndian {},
-        }
-    }
 }
 
-/// A convenience wrapper for the speedy serialization.  Note that specific
-/// errors are swallowed by this interface due to speedy restrictions. Only the
-/// display version will be returned.
-pub struct BufWriteWriter<'a> {
-    buf: &'a mut BufWrite,
-    ctx: LittleEndian,
-}
-
-impl<'a> Writer<LittleEndian> for BufWriteWriter<'a> {
+impl Writer<LittleEndian> for BufWrite {
     fn write_bytes(&mut self, slice: &[u8]) -> Result<(), speedy::Error> {
-        use std::io::Write;
-        self.buf
-            .write(slice)
+        <Self as std::io::Write>::write(self, slice)
             .map(|_| ())
             .map_err(|e| speedy::Error::custom(format!("{e}")))
     }
 
     fn context(&self) -> &LittleEndian {
-        &self.ctx
+        &self.endianess
     }
 
     fn context_mut(&mut self) -> &mut LittleEndian {
-        &mut self.ctx
+        &mut self.endianess
     }
 }
 
@@ -403,6 +386,7 @@ impl Buf {
         BufWrite {
             buf: storage,
             size: self.range.end.to_bytes(),
+            endianess: LittleEndian {  },
         }
     }
 

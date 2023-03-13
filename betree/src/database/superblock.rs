@@ -57,12 +57,12 @@ impl<P: Writable<LittleEndian>> Superblock<P> {
                 tiers: *tiers,
             };
             this.magic.copy_from_slice(MAGIC);
-            this.write_to(&mut data.writer())?;
+            this.write_to(&mut data)?;
         }
         let checksum_size = XxHash::static_size();
         data.seek(io::SeekFrom::End(-i64::from(checksum_size as u32)))?;
         let checksum = checksum(&data.as_ref()[..BLOCK_SIZE - checksum_size]);
-        checksum.write_to(&mut data.writer())?;
+        checksum.write_to(&mut data)?;
         Ok(data.into_buf())
     }
 }
