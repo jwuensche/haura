@@ -9,7 +9,7 @@ use crate::{
 use speedy::{LittleEndian, Readable, Writable};
 use std::io::{self, Seek};
 
-static MAGIC: &[u8] = b"HEAFSv3\0\n";
+const MAGIC: &[u8] = b"HEAFSv3\0\n";
 
 /// A superblock contains the location of the root tree,
 /// and is read during database initialisation.
@@ -140,5 +140,10 @@ mod tests {
         )
         .and_then(|buf| Superblock::<u64>::unpack(&buf))
         .expect("Serialization Pipeline Failed.");
+    }
+
+    #[test]
+    fn magic_is_correct() {
+        assert!(MAGIC.len() == 9)
     }
 }
