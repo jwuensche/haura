@@ -248,6 +248,7 @@ pub struct MutBuf {
 pub struct BufWrite {
     buf: AlignedStorage,
     size: u32,
+    // As most system are little endian, just use it pinned here.
     endianess: LittleEndian,
 }
 
@@ -258,7 +259,7 @@ impl BufWrite {
         Self {
             buf: AlignedStorage::zeroed(capacity),
             size: 0,
-            endianess: LittleEndian {  },
+            endianess: LittleEndian {},
         }
     }
 
@@ -386,7 +387,7 @@ impl Buf {
         BufWrite {
             buf: storage,
             size: self.range.end.to_bytes(),
-            endianess: LittleEndian {  },
+            endianess: LittleEndian {},
         }
     }
 
