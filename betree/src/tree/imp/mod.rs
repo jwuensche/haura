@@ -21,11 +21,12 @@ use crate::{
 use leaf::FillUpResult;
 use owning_ref::OwningRef;
 use parking_lot::{RwLock, RwLockWriteGuard};
+use speedy::{Readable, Writable};
 use std::{borrow::Borrow, marker::PhantomData, mem, ops::RangeBounds};
 
 /// Additional information for a single entry. Concerns meta information like
 /// the desired storage level of a key.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Readable, Writable)]
 pub struct KeyInfo {
     storage_preference: StoragePreference,
 }

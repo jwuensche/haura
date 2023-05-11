@@ -12,6 +12,7 @@ use crate::{
 };
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use speedy::{Readable, Writable};
 use std::{
     borrow::Borrow,
     collections::{btree_map::Entry, BTreeMap, Bound},
@@ -19,7 +20,7 @@ use std::{
 };
 
 /// A buffer for messages that belong to a child of a tree node.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Readable, Writable)]
 #[serde(bound(serialize = "N: Serialize", deserialize = "N: Deserialize<'de>"))]
 pub(super) struct ChildBuffer<N: 'static> {
     pub(super) messages_preference: AtomicStoragePreference,

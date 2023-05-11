@@ -113,7 +113,7 @@ impl PartialOrd for StoragePreference {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Readable, Writable)]
 /// An atomic version of [StoragePreference], replacing a RwLock<Option<StoragePreference>> by
 /// using the additional variant "Unknown" in place of None.
 pub struct AtomicStoragePreference(AtomicU8);
@@ -206,7 +206,7 @@ impl Default for AtomicStoragePreference {
 /// automated migration policy, in contrast to the lower bound by
 /// [StoragePreference]. Acts as a neutral element when set to
 /// `None`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Readable, Writable)]
 pub(crate) struct AtomicSystemStoragePreference(AtomicU8);
 
 impl Clone for AtomicSystemStoragePreference {

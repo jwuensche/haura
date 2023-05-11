@@ -3,6 +3,7 @@
 
 use crate::size::Size;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use speedy::{Readable, Writable, BigEndian, Context};
 use stable_deref_trait::StableDeref;
 use std::{
     borrow::Borrow,
@@ -31,6 +32,13 @@ impl<T: AsRef<[u8]>> PartialOrd<T> for CowBytes {
     }
 }
 
+impl<C> Writable<C> for CowBytes where C:Context{
+    fn write_to< T: ?Sized + speedy::Writer< C > >( &self, writer: &mut T ) -> Result< (), C::Error > {
+        writer.write_u32(self.inner.len() as u32)?;
+        writer.write_bytes(&self.inner)
+    }
+}
+
 impl Serialize for CowBytes {
     #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -38,6 +46,17 @@ impl Serialize for CowBytes {
         S: Serializer,
     {
         serializer.serialize_bytes(self)
+    }
+}
+
+impl<'a, C> Readable<'a, C> for CowBytes where
+C: Context{
+    fn read_from< R: speedy::Reader< 'a, C > >( reader: &mut R ) -> Result< Self, C::Error > {
+        let len = reader.read_u32()?;
+        let vec = reader.read_vec(len as usize)?;
+        Ok(CowBytes {
+            inner: Arc::new(vec),
+        })
     }
 }
 
@@ -219,7 +238,7 @@ impl<'a> Extend<&'a u8> for CowBytes {
 }
 
 /// Reference-counted pointer which points to a subslice of the referenced data.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Readable, Writable)]
 pub struct SlicedCowBytes {
     pub(super) data: CowBytes,
     pos: u32,
@@ -250,6 +269,7 @@ impl<'de> Deserialize<'de> for SlicedCowBytes {
     where
         D: Deserializer<'de>,
     {
+        // TODO: Do we depend on this characteristic somewhere in the code?
         CowBytes::deserialize(deserializer).map(Self::from)
     }
 }
