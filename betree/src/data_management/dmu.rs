@@ -5,6 +5,8 @@ use super::{
     object_ptr::ObjectPointer,
     CopyOnWriteEvent, Dml, HasStoragePreference, Object, ObjectReference,
 };
+#[cfg(feature = "nvm")]
+use crate::replication::PersistentCache;
 use crate::{
     allocator::{Action, SegmentAllocator, SegmentId},
     buffer::Buf,
@@ -60,6 +62,8 @@ where
     next_modified_node_id: AtomicU64,
     next_disk_id: AtomicU64,
     report_tx: Option<Sender<DmlMsg>>,
+    #[cfg(feature = "nvm")]
+    persistent_cache: Option<Arc<Mutex<PersistentCache<DiskOffset, Option<DiskOffset>>>>>,
 }
 
 impl<E, SPL> Dmu<E, SPL>
@@ -76,6 +80,9 @@ where
         alloc_strategy: [[Option<u8>; NUM_STORAGE_CLASSES]; NUM_STORAGE_CLASSES],
         cache: E,
         handler: Handler<ObjRef<ObjectPointer<SPL::Checksum>>>,
+        #[cfg(feature = "nvm")] persistent_cache: Option<
+            PersistentCache<DiskOffset, Option<DiskOffset>>,
+        >,
     ) -> Self {
         let allocation_data = (0..pool.storage_class_count())
             .map(|class| {
@@ -103,6 +110,8 @@ where
             next_modified_node_id: AtomicU64::new(1),
             next_disk_id: AtomicU64::new(0),
             report_tx: None,
+            #[cfg(feature = "nvm")]
+            persistent_cache: persistent_cache.map(|cache| Arc::new(Mutex::new(cache))),
         }
     }
 
@@ -226,6 +235,23 @@ where
         let offset = op.offset();
         let generation = op.generation();
 
+        #[cfg(feature = "nvm")]
+        let compressed_data = {
+            let mut buf = None;
+            if let Some(ref pcache_mtx) = self.persistent_cache {
+                let mut cache = pcache_mtx.lock();
+                if let Ok(buffer) = cache.get(offset) {
+                    buf = Some(Buf::from_zero_padded(buffer.to_vec()))
+                }
+            }
+            if let Some(b) = buf {
+                b
+            } else {
+                self.pool
+                    .read(op.size(), op.offset(), op.checksum().clone())?
+            }
+        };
+        #[cfg(not(feature = "nvm"))]
         let compressed_data = self
             .pool
             .read(op.size(), op.offset(), op.checksum().clone())?;
@@ -329,7 +355,30 @@ where
 
         let mid = match key {
             ObjectKey::InWriteback(_) => unreachable!(),
-            ObjectKey::Unmodified { .. } => return Ok(()),
+            ObjectKey::Unmodified {
+                offset,
+                generation: _,
+            } => {
+                #[cfg(feature = "nvm")]
+                if let Some(ref pcache_mtx) = self.persistent_cache {
+                    let mut pcache = pcache_mtx.lock();
+                    // TODO: Specify correct constant instead of magic 🪄
+                    let mut vec = Vec::with_capacity(4 * 1024 * 1024);
+                    object.value_mut().get_mut().pack(&mut vec)?;
+                    let _ = pcache.remove(offset);
+                    pcache
+                        .prepare_insert(offset, &vec, None)
+                        .insert(|maybe_offset, data| {
+                            // TODO: Write eventually not synced data to disk finally.
+                            if let Some(offset) = maybe_offset {
+                                self.pool
+                                    .begin_write(Buf::from_zero_padded(data.to_vec()), *offset)?;
+                            }
+                            Ok(())
+                        })?;
+                }
+                return Ok(());
+            }
             ObjectKey::Modified(mid) => mid,
         };
 
@@ -341,6 +390,8 @@ where
         drop(cache);
         let object = CacheValueRef::write(entry);
 
+        // Eviction at this points only writes a singular node as all children
+        // need to be unmodified beforehand.
         self.handle_write_back(object, mid, true, pk)?;
         Ok(())
     }
@@ -412,7 +463,37 @@ where
             state.finish()
         };
 
-        self.pool.begin_write(compressed_data, offset)?;
+        #[cfg(feature = "nvm")]
+        let skip_write_back = self.persistent_cache.is_some();
+        #[cfg(not(feature = "nvm"))]
+        let skip_write_back = false;
+
+        if !skip_write_back {
+            self.pool.begin_write(compressed_data, offset)?;
+        } else {
+            let bar = compressed_data.clone();
+            #[cfg(feature = "nvm")]
+            if let Some(ref pcache_mtx) = self.persistent_cache {
+                let away = Arc::clone(pcache_mtx);
+                self.pool.begin_foo(offset, move || {
+                    let mut pcache = away.lock();
+                    let _ = pcache.remove(offset);
+                    pcache
+                        .prepare_insert(offset, &compressed_data, None)
+                        .insert(|maybe_offset, data| {
+                            // TODO: Deduplicate this?
+                            // if let Some(offset) = maybe_offset {
+                            //     self.pool
+                            //         .begin_write(Buf::from_zero_padded(data.to_vec()), *offset)?;
+                            // }
+                            panic!("This should not have happnened in the debug run!");
+                            Ok(())
+                        })
+                        .unwrap();
+                })?;
+            }
+            self.pool.begin_write(bar, offset)?;
+        }
 
         let obj_ptr = ObjectPointer {
             offset,
@@ -499,11 +580,7 @@ where
             {
                 warn!(
                     "Storage tier {class} does not have enough space remaining. {} blocks of {}",
-                    self.handler
-                        .free_space_tier(class)
-                        .unwrap()
-                        .free
-                        .as_u64(),
+                    self.handler.free_space_tier(class).unwrap().free.as_u64(),
                     size.as_u64()
                 );
                 continue;

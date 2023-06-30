@@ -18,8 +18,8 @@ unsafe impl Send for Pal {}
 impl Drop for Pal {
     fn drop(&mut self) {
         // there should exist no further reference to this resources otherwise we risk some invalid fetches
-        if Arc::strong_count(&self.pool) == 0 && Arc::weak_count(&self.pool) == 0 {
-            self.close()
+        if Arc::strong_count(&self.pool) == 1 && Arc::weak_count(&self.pool) == 0 {
+            // self.close()
         }
     }
 }
@@ -64,10 +64,24 @@ pub enum PalError {
 
 // A friendly persistent pointer. Useless without the according handle to the
 // original arena.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PalPtr {
     inner: PMEMoid,
     size: usize,
+}
+
+impl PartialEq for PMEMoid {
+    fn eq(&self, other: &Self) -> bool {
+        self.pool_uuid_lo == other.pool_uuid_lo && self.off == other.off
+    }
+}
+
+impl Eq for PMEMoid {}
+
+impl Drop for PalPtr {
+    fn drop(&mut self) {
+        // self.free()
+    }
 }
 
 impl PalPtr {
@@ -107,7 +121,7 @@ impl PalPtr {
 
     /// Deallocate this object. Required if this value is no longer needed.
     /// There is *no* automatic deallocation logic.
-    pub fn free(mut self) {
+    pub fn free(&mut self) {
         unsafe { pmemobj_free(&mut self.inner) }
     }
 }
