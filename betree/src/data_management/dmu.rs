@@ -63,7 +63,7 @@ where
     next_disk_id: AtomicU64,
     report_tx: Option<Sender<DmlMsg>>,
     #[cfg(feature = "nvm")]
-    persistent_cache: Option<Arc<Mutex<PersistentCache<DiskOffset, Option<DiskOffset>>>>>,
+    persistent_cache: Option<Arc<RwLock<PersistentCache<DiskOffset, Option<DiskOffset>>>>>,
 }
 
 impl<E, SPL> Dmu<E, SPL>
@@ -111,7 +111,7 @@ where
             next_disk_id: AtomicU64::new(0),
             report_tx: None,
             #[cfg(feature = "nvm")]
-            persistent_cache: persistent_cache.map(|cache| Arc::new(Mutex::new(cache))),
+            persistent_cache: persistent_cache.map(|cache| Arc::new(RwLock::new(cache))),
         }
     }
 
@@ -239,7 +239,7 @@ where
         let compressed_data = {
             let mut buf = None;
             if let Some(ref pcache_mtx) = self.persistent_cache {
-                let mut cache = pcache_mtx.lock();
+                let mut cache = pcache_mtx.read();
                 if let Ok(buffer) = cache.get(offset) {
                     buf = Some(Buf::from_zero_padded(buffer.to_vec()))
                 }
@@ -361,7 +361,7 @@ where
             } => {
                 #[cfg(feature = "nvm")]
                 if let Some(ref pcache_mtx) = self.persistent_cache {
-                    let mut pcache = pcache_mtx.lock();
+                    let mut pcache = pcache_mtx.write();
                     // TODO: Specify correct constant instead of magic 🪄
                     let mut vec = Vec::with_capacity(4 * 1024 * 1024);
                     object.value_mut().get_mut().pack(&mut vec)?;
@@ -476,7 +476,7 @@ where
             if let Some(ref pcache_mtx) = self.persistent_cache {
                 let away = Arc::clone(pcache_mtx);
                 self.pool.begin_foo(offset, move || {
-                    let mut pcache = away.lock();
+                    let mut pcache = away.write();
                     let _ = pcache.remove(offset);
                     pcache
                         .prepare_insert(offset, &compressed_data, None)

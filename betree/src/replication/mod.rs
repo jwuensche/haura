@@ -21,6 +21,8 @@ const PREFIX_KV: u8 = 0;
 const PREFIX_LRU: u8 = 1;
 const PREFIX_LRU_ROOT: u8 = 2;
 
+use crossbeam_channel::Sender;
+use parking_lot::RwLock;
 use pmem_hashmap::{
     allocator::{Pal, PalPtr},
     PMap, PMapError,
@@ -37,6 +39,7 @@ use std::{
 use twox_hash::XxHash64;
 
 mod lru;
+mod lru_worker;
 use lru::Plru;
 use serde::{Deserialize, Serialize};
 
@@ -57,18 +60,28 @@ impl<T> DerefMut for Persistent<T> {
     }
 }
 
+impl<T> Drop for Persistent<T> {
+    fn drop(&mut self) {
+        // NO-OP
+    }
+}
+
+// TODO: Is this really safe?
+unsafe impl<T> Sync for Persistent<PCacheRoot<T>> {}
+
 /// Persistent byte array cache. Optimized for read performance, avoid frequent
 /// updates.
 pub struct PersistentCache<K, T> {
     pal: Pal,
     root: Persistent<PCacheRoot<T>>,
+    tx: Sender<lru_worker::Msg<T>>,
     // Fix key types
     key_type: PhantomData<K>,
 }
 
 pub struct PCacheRoot<T> {
     map: BTreeMap<u64, PCacheMapEntry, Pal>,
-    lru: Plru<T>,
+    lru: RwLock<Plru<T>>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,29 +116,65 @@ impl<'a, K, T: Clone> PersistentCacheInsertion<'a, K, T> {
     where
         F: Fn(&T, &[u8]) -> Result<(), crate::vdev::Error>,
     {
-        while let Ok(Some((key, baggage))) = self.cache.root.lru.evict(self.value.len() as u64) {
-            // let data = self.cache.pmap.get(key.key())?;
-            let entry = self.cache.root.map.get(&key).unwrap();
-            let data =
-                unsafe { core::slice::from_raw_parts(entry.data.load() as *const u8, entry.size) };
-            if f(baggage, data).is_err() {
-                return Err(PMapError::ExternalError("Writeback failed".into()));
-            }
+        loop {
+            let key = {
+                let lock = self.cache.root.lru.read();
+                let res = lock.evict(self.value.len() as u64);
+                match res {
+                    Ok(Some((key, baggage))) => {
+                        // let data = self.cache.pmap.get(key.key())?;
+                        let entry = self.cache.root.map.get(&key).unwrap();
+                        let data = unsafe {
+                            core::slice::from_raw_parts(entry.data.load() as *const u8, entry.size)
+                        };
+                        if f(baggage, data).is_err() {
+                            return Err(PMapError::ExternalError("Writeback failed".into()));
+                        }
+                        key
+                    }
+                    _ => break,
+                }
+            };
             // Finally actually remove the entries
             let mut entry = self.cache.root.map.remove(&key).unwrap();
             entry.data.free();
-            self.cache.root.lru.remove(&mut entry.lru_node)?;
-            entry.lru_node.free();
+            self.cache.tx.send(lru_worker::Msg::Remove(entry.lru_node));
+            // self.cache.root.lru.remove(&mut entry.lru_node)?;
+            // entry.lru_node.free();
         }
+
+        // while let Ok(Some((key, baggage))) =
+        //     self.cache.root.lru.read().evict(self.value.len() as u64)
+        // {
+        //     // let data = self.cache.pmap.get(key.key())?;
+        //     let entry = self.cache.root.map.get(&key).unwrap();
+        //     let data =
+        //         unsafe { core::slice::from_raw_parts(entry.data.load() as *const u8, entry.size) };
+        //     if f(baggage, data).is_err() {
+        //         return Err(PMapError::ExternalError("Writeback failed".into()));
+        //     }
+        //     // Finally actually remove the entries
+        //     let mut entry = self.cache.root.map.remove(&key).unwrap();
+        //     entry.data.free();
+        //     self.cache.tx.send(lru_worker::Msg::Remove(entry.lru_node));
+        //     // self.cache.root.lru.remove(&mut entry.lru_node)?;
+        //     // entry.lru_node.free();
+        // }
         let lru_ptr = self.cache.pal.allocate(lru::PLRU_NODE_SIZE).unwrap();
         let data_ptr = self.cache.pal.allocate(self.value.len()).unwrap();
         data_ptr.copy_from(self.value, &self.cache.pal);
-        self.cache.root.lru.insert(
+        self.cache.tx.send(lru_worker::Msg::Insert(
             lru_ptr.clone(),
             self.key,
             self.value.len() as u64,
             self.baggage,
-        )?;
+        ));
+        // self.cache.root.lru.insert(
+        //     lru_ptr.clone(),
+        //     self.key,
+        //     self.value.len() as u64,
+        //     self.baggage,
+        // )?;
         let map_entry = PCacheMapEntry {
             lru_node: lru_ptr,
             data: data_ptr,
@@ -136,16 +185,20 @@ impl<'a, K, T: Clone> PersistentCacheInsertion<'a, K, T> {
     }
 }
 
-impl<K: Hash, T> PersistentCache<K, T> {
+impl<K: Hash, T: Send + 'static> PersistentCache<K, T> {
     /// Open an existent [PersistentCache]. Fails if no cache exist or invalid.
     pub fn open<P: Into<std::path::PathBuf>>(path: P) -> Result<Self, PMapError> {
         let pal = Pal::open(path.into()).unwrap();
         let root = pal.root(size_of::<PCacheRoot<T>>()).unwrap();
         assert!(!root.load().is_null());
         if let Some(root) = NonNull::new(root.load() as *mut PCacheRoot<T>) {
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let root_lru = Persistent(root.clone());
+            std::thread::spawn(move || lru_worker::main(rx, root_lru));
             let root = Persistent(root);
             Ok(Self {
                 pal,
+                tx,
                 root,
                 key_type: PhantomData::default(),
             })
@@ -162,13 +215,17 @@ impl<K: Hash, T> PersistentCache<K, T> {
         if let Some(root) = NonNull::new(root.load() as *mut PCacheRoot<T>) {
             unsafe {
                 root.as_ptr().write_unaligned(PCacheRoot {
-                    lru: Plru::init(size as u64),
+                    lru: RwLock::new(Plru::init(size as u64)),
                     map: BTreeMap::new_in(pal.clone()),
                 })
             };
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let root_lru = Persistent(root.clone());
+            std::thread::spawn(move || lru_worker::main(rx, root_lru));
             let mut root = Persistent(root);
             Ok(Self {
                 pal,
+                tx,
                 root,
                 key_type: PhantomData::default(),
             })
@@ -178,13 +235,14 @@ impl<K: Hash, T> PersistentCache<K, T> {
     }
 
     /// Fetch an entry from the hashmap.
-    pub fn get(&mut self, key: K) -> Result<&[u8], PMapError> {
+    pub fn get(&self, key: K) -> Result<&[u8], PMapError> {
         let mut hasher = XxHash64::default();
         key.hash(&mut hasher);
         let hash = hasher.finish();
         let res = self.root.map.get(&hash).cloned();
         if let Some(entry) = res {
-            self.root.lru.touch(&entry.lru_node)?;
+            self.tx.send(lru_worker::Msg::Touch(entry.lru_node));
+            // self.root.lru.touch(&entry.lru_node)?;
             Ok(unsafe { core::slice::from_raw_parts(entry.data.load() as *const u8, entry.size) })
         } else {
             Err(PMapError::DoesNotExist)
@@ -215,8 +273,9 @@ impl<K: Hash, T> PersistentCache<K, T> {
         key.hash(&mut hasher);
         let hash = hasher.finish();
         if let Some(mut entry) = self.root.map.remove(&hash) {
-            self.root.lru.remove(&mut entry.lru_node).unwrap();
-            entry.lru_node.free();
+            self.tx.send(lru_worker::Msg::Remove(entry.lru_node));
+            // self.root.lru.remove(&mut entry.lru_node).unwrap();
+            // entry.lru_node.free();
             entry.data.free();
             Ok(())
         } else {

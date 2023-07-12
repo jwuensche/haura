@@ -327,7 +327,7 @@ static int fio_haura_setup(struct thread_data *td) {
       return bail(error);
     }
     fio_haura_translate(td, cfg);
-    if ((global_data.db = betree_open_or_create_db(cfg, &error)) == NULL) {
+    if ((global_data.db = betree_create_db(cfg, &error)) == NULL) {
       return bail(error);
     }
     if ((global_data.obj_s = betree_create_object_store(

@@ -229,7 +229,7 @@ mod tests {
         let file = TestFile::new();
         let pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
         let root = pal.root(size_of::<Plru<()>>()).unwrap();
-        let plru = unsafe { root.load() as *mut Plru<()> };
+        let plru = root.load() as *mut Plru<()>;
         unsafe { plru.write_unaligned(Plru::<()>::init(32 * 1024 * 1024)) };
     }
 
@@ -238,7 +238,7 @@ mod tests {
         let file = TestFile::new();
         let pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
         let root = pal.root(size_of::<Plru<()>>()).unwrap();
-        let plru = unsafe { root.load() as *mut Plru<()> };
+        let plru = root.load() as *mut Plru<()>;
         unsafe { plru.write_unaligned(Plru::<()>::init(32 * 1024 * 1024)) };
 
         // Insert 3 entries
@@ -258,7 +258,7 @@ mod tests {
         let file = TestFile::new();
         let pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
         let root = pal.root(size_of::<Plru<()>>()).unwrap();
-        let plru = unsafe { root.load() as *mut Plru<()> };
+        let plru = root.load() as *mut Plru<()>;
         unsafe { plru.write_unaligned(Plru::<()>::init(32 * 1024 * 1024)) };
 
         // Insert 3 entries
@@ -285,7 +285,7 @@ mod tests {
         let file = TestFile::new();
         let pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
         let root = pal.root(size_of::<Plru<()>>()).unwrap();
-        let plru = unsafe { root.load() as *mut Plru<()> };
+        let plru = root.load() as *mut Plru<()>;
         unsafe { plru.write_unaligned(Plru::<()>::init(32 * 1024 * 1024)) };
 
         // Insert 3 entries
@@ -313,7 +313,7 @@ mod tests {
         let file = TestFile::new();
         let pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
         let root = pal.root(size_of::<Plru<()>>()).unwrap();
-        let plru = unsafe { root.load() as *mut Plru<()> };
+        let plru = root.load() as *mut Plru<()>;
         unsafe { plru.write_unaligned(Plru::<()>::init(32 * 1024 * 1024)) };
 
         // Insert 3 entries
@@ -344,7 +344,7 @@ mod tests {
         {
             let mut pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
             let root = pal.root(size_of::<Plru<()>>()).unwrap();
-            let plru = unsafe { root.load() as *mut Plru<()> };
+            let plru = root.load() as *mut Plru<()>;
             unsafe { plru.write_unaligned(Plru::<()>::init(32 * 1024 * 1024)) };
 
             // Insert 3 entries
@@ -363,7 +363,7 @@ mod tests {
         {
             let pal = Pal::open(file.path()).unwrap();
             let root = pal.root(size_of::<Plru<()>>()).unwrap();
-            let plru = unsafe { root.load() as *mut Plru<()> };
+            let plru = root.load() as *mut Plru<()>;
             let plru = unsafe { plru.as_mut().unwrap() };
 
             assert_eq!(plru.head, Some(ptr.last().unwrap().clone()));
