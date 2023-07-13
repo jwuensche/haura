@@ -359,9 +359,10 @@ mod tests {
             }
             let plru = unsafe { plru.as_mut().unwrap() };
             assert_eq!(plru.count, 3);
+            pal.close();
         }
         {
-            let pal = Pal::open(file.path()).unwrap();
+            let mut pal = Pal::open(file.path()).unwrap();
             let root = pal.root(size_of::<Plru<()>>()).unwrap();
             let plru = root.load() as *mut Plru<()>;
             let plru = unsafe { plru.as_mut().unwrap() };
@@ -373,6 +374,7 @@ mod tests {
                 plru.remove(ptr);
             }
             assert_eq!(plru.count, 0);
+            pal.close();
         }
     }
 }

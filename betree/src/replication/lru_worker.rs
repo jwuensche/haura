@@ -7,6 +7,7 @@ pub enum Msg<T> {
     Touch(PalPtr),
     Remove(PalPtr),
     Insert(PalPtr, u64, u64, T),
+    Close,
 }
 
 pub fn main<T>(rx: Receiver<Msg<T>>, mut root: Persistent<PCacheRoot<T>>) {
@@ -15,17 +16,18 @@ pub fn main<T>(rx: Receiver<Msg<T>>, mut root: Persistent<PCacheRoot<T>>) {
         match msg {
             Msg::Touch(ptr) => {
                 let mut lru = root.lru.write();
-                lru.touch(&ptr);
+                let _ = lru.touch(&ptr);
             }
             Msg::Remove(mut ptr) => {
                 let mut lru = root.lru.write();
-                lru.remove(&ptr);
+                let _ = lru.remove(&ptr);
                 ptr.free();
             }
             Msg::Insert(ptr, hash, size, baggage) => {
                 let mut lru = root.lru.write();
-                lru.insert(ptr, hash, size, baggage);
+                let _ = lru.insert(ptr, hash, size, baggage);
             }
+            Msg::Close => break,
         }
     }
 }

@@ -35,13 +35,17 @@ use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,
     ptr::NonNull,
+    thread::JoinHandle,
 };
 use twox_hash::XxHash64;
+use zstd_safe::WriteBuf;
 
 mod lru;
 mod lru_worker;
 use lru::Plru;
 use serde::{Deserialize, Serialize};
+
+use crate::buffer::Buf;
 
 /// A pointer to a region in persistent memory.
 pub struct Persistent<T>(NonNull<T>);
@@ -75,8 +79,23 @@ pub struct PersistentCache<K, T> {
     pal: Pal,
     root: Persistent<PCacheRoot<T>>,
     tx: Sender<lru_worker::Msg<T>>,
+    hndl: Option<JoinHandle<()>>,
     // Fix key types
     key_type: PhantomData<K>,
+}
+
+impl<K, T> Drop for PersistentCache<K, T> {
+    fn drop(&mut self) {
+        // Spin while the queue needs to be processed
+        self.tx
+            .send(lru_worker::Msg::Close)
+            .expect("Thread panicked.");
+        self.hndl
+            .take()
+            .expect("Thread handle has been empty?")
+            .join();
+        self.pal.close();
+    }
 }
 
 pub struct PCacheRoot<T> {
@@ -104,7 +123,7 @@ pub struct PersistentCacheConfig {
 pub struct PersistentCacheInsertion<'a, K, T> {
     cache: &'a mut PersistentCache<K, T>,
     key: u64,
-    value: &'a [u8],
+    value: Buf,
     baggage: T,
 }
 
@@ -161,12 +180,13 @@ impl<'a, K, T: Clone> PersistentCacheInsertion<'a, K, T> {
         //     // entry.lru_node.free();
         // }
         let lru_ptr = self.cache.pal.allocate(lru::PLRU_NODE_SIZE).unwrap();
-        let data_ptr = self.cache.pal.allocate(self.value.len()).unwrap();
-        data_ptr.copy_from(self.value, &self.cache.pal);
+        let data = self.value.as_slice_with_padding();
+        let data_ptr = self.cache.pal.allocate(data.len()).unwrap();
+        data_ptr.copy_from(data, &self.cache.pal);
         self.cache.tx.send(lru_worker::Msg::Insert(
             lru_ptr.clone(),
             self.key,
-            self.value.len() as u64,
+            data.len() as u64,
             self.baggage,
         ));
         // self.cache.root.lru.insert(
@@ -178,7 +198,7 @@ impl<'a, K, T: Clone> PersistentCacheInsertion<'a, K, T> {
         let map_entry = PCacheMapEntry {
             lru_node: lru_ptr,
             data: data_ptr,
-            size: self.value.len(),
+            size: data.len(),
         };
         self.cache.root.map.insert(self.key, map_entry);
         Ok(())
@@ -194,12 +214,13 @@ impl<K: Hash, T: Send + 'static> PersistentCache<K, T> {
         if let Some(root) = NonNull::new(root.load() as *mut PCacheRoot<T>) {
             let (tx, rx) = crossbeam_channel::unbounded();
             let root_lru = Persistent(root.clone());
-            std::thread::spawn(move || lru_worker::main(rx, root_lru));
+            let hndl = std::thread::spawn(move || lru_worker::main(rx, root_lru));
             let root = Persistent(root);
             Ok(Self {
                 pal,
                 tx,
                 root,
+                hndl: Some(hndl),
                 key_type: PhantomData::default(),
             })
         } else {
@@ -221,12 +242,13 @@ impl<K: Hash, T: Send + 'static> PersistentCache<K, T> {
             };
             let (tx, rx) = crossbeam_channel::unbounded();
             let root_lru = Persistent(root.clone());
-            std::thread::spawn(move || lru_worker::main(rx, root_lru));
+            let hndl = std::thread::spawn(move || lru_worker::main(rx, root_lru));
             let mut root = Persistent(root);
             Ok(Self {
                 pal,
                 tx,
                 root,
+                hndl: Some(hndl),
                 key_type: PhantomData::default(),
             })
         } else {
@@ -249,11 +271,29 @@ impl<K: Hash, T: Send + 'static> PersistentCache<K, T> {
         }
     }
 
+    /// Return a [Buf].
+    ///
+    /// TODO: We have to pin these entries to ensure that they may not be
+    /// evicted while in read-only mode.
+    pub fn get_buf(&self, key: K) -> Result<Buf, PMapError> {
+        let mut hasher = XxHash64::default();
+        key.hash(&mut hasher);
+        let hash = hasher.finish();
+        let res = self.root.map.get(&hash).cloned();
+        if let Some(entry) = res {
+            self.tx.send(lru_worker::Msg::Touch(entry.lru_node));
+            // self.root.lru.touch(&entry.lru_node)?;
+            Ok(Buf::from_persistent_ptr(entry.data, entry.size as u32))
+        } else {
+            Err(PMapError::DoesNotExist)
+        }
+    }
+
     /// Start an insertion. An insertion can only be successfully completed if values are properly evicted from the cache
     pub fn prepare_insert<'a>(
         &'a mut self,
         key: K,
-        value: &'a [u8],
+        value: Buf,
         baggage: T,
     ) -> PersistentCacheInsertion<'a, K, T> {
         let mut hasher = XxHash64::default();

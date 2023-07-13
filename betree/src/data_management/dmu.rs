@@ -9,7 +9,7 @@ use super::{
 use crate::replication::PersistentCache;
 use crate::{
     allocator::{Action, SegmentAllocator, SegmentId},
-    buffer::Buf,
+    buffer::{Buf, BufWrite},
     cache::{Cache, ChangeKeyError, RemoveError},
     checksum::{Builder, Checksum, State},
     compression::CompressionBuilder,
@@ -240,8 +240,9 @@ where
             let mut buf = None;
             if let Some(ref pcache_mtx) = self.persistent_cache {
                 let mut cache = pcache_mtx.read();
-                if let Ok(buffer) = cache.get(offset) {
-                    buf = Some(Buf::from_zero_padded(buffer.to_vec()))
+                if let Ok(buffer) = cache.get_buf(offset) {
+                    // buf = Some(Buf::from_zero_padded(buffer.to_vec()))
+                    buf = Some(buffer)
                 }
             }
             if let Some(b) = buf {
@@ -359,23 +360,34 @@ where
                 offset,
                 generation: _,
             } => {
+                // If data is unmodified still move to pcache, as it might be worth saving (if not already contained)
                 #[cfg(feature = "nvm")]
                 if let Some(ref pcache_mtx) = self.persistent_cache {
-                    let mut pcache = pcache_mtx.write();
-                    // TODO: Specify correct constant instead of magic 🪄
-                    let mut vec = Vec::with_capacity(4 * 1024 * 1024);
-                    object.value_mut().get_mut().pack(&mut vec)?;
-                    let _ = pcache.remove(offset);
-                    pcache
-                        .prepare_insert(offset, &vec, None)
-                        .insert(|maybe_offset, data| {
-                            // TODO: Write eventually not synced data to disk finally.
-                            if let Some(offset) = maybe_offset {
-                                self.pool
-                                    .begin_write(Buf::from_zero_padded(data.to_vec()), *offset)?;
-                            }
-                            Ok(())
-                        })?;
+                    {
+                        // Encapsulate concurrent read access
+                        let pcache = pcache_mtx.read();
+                        if pcache.get(offset).is_ok() {
+                            return Ok(());
+                        }
+                    }
+
+                    warn!("Entry would need to be written to persistent cache but procedure unimplemented!");
+
+                    // TODO: Compress and write-out entry
+                    // let mut pcache = pcache_mtx.write();
+                    // let mut buf = BufWrite::with_capacity(Block(1));
+                    // object.value_mut().get_mut().pack(&mut buf)?;
+                    // let _ = pcache.remove(offset);
+                    // pcache
+                    //     .prepare_insert(offset, &vec, None)
+                    //     .insert(|maybe_offset, data| {
+                    //         // TODO: Write eventually not synced data to disk finally.
+                    //         if let Some(offset) = maybe_offset {
+                    //             self.pool
+                    //                 .begin_write(Buf::from_zero_padded(data.to_vec()), *offset)?;
+                    //         }
+                    //         Ok(())
+                    //     })?;
                 }
                 return Ok(());
             }
@@ -471,6 +483,7 @@ where
         if !skip_write_back {
             self.pool.begin_write(compressed_data, offset)?;
         } else {
+            // Cheap copy due to rc
             let bar = compressed_data.clone();
             #[cfg(feature = "nvm")]
             if let Some(ref pcache_mtx) = self.persistent_cache {
@@ -479,7 +492,7 @@ where
                     let mut pcache = away.write();
                     let _ = pcache.remove(offset);
                     pcache
-                        .prepare_insert(offset, &compressed_data, None)
+                        .prepare_insert(offset, bar, None)
                         .insert(|maybe_offset, data| {
                             // TODO: Deduplicate this?
                             // if let Some(offset) = maybe_offset {
@@ -492,7 +505,7 @@ where
                         .unwrap();
                 })?;
             }
-            self.pool.begin_write(bar, offset)?;
+            self.pool.begin_write(compressed_data, offset)?;
         }
 
         let obj_ptr = ObjectPointer {

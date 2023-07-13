@@ -175,7 +175,8 @@ impl Pal {
         unsafe { pmemobj_close(self.pool.as_ptr()) };
     }
 
-    /// Allocate an area of size in the persistent memory.
+    /// Allocate an area of size in the persistent memory. Allocations are
+    /// always guaranteed to be cache line aligned for Optane PMem (64 bytes).
     pub fn allocate(&self, size: usize) -> Result<PalPtr, PalError> {
         let mut oid = std::mem::MaybeUninit::<PMEMoid>::uninit();
         if unsafe {
