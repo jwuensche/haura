@@ -181,14 +181,17 @@ impl<C: Checksum> StoragePoolLayer for StoragePoolUnit<C> {
         ret
     }
 
-    fn begin_foo<F>(&self, offset: DiskOffset, f: F) -> vdev::Result<()>
+    fn begin_write_offload<F>(&self, offset: DiskOffset, f: F) -> vdev::Result<()>
     where
         F: FnOnce() + Send + 'static,
     {
+        let inner = self.inner.clone();
         let (enqueue_done, wait_for_enqueue) = futures::channel::oneshot::channel();
         let write = self.inner.pool.spawn_with_handle(async move {
             wait_for_enqueue.await.unwrap();
             f();
+
+            inner.write_back_queue.mark_completed(&offset).await;
             Ok(())
         })?;
 

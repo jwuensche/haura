@@ -438,12 +438,12 @@ impl Buf {
     /// be done with "normal" rust allocations. Therefore, only the length of
     /// the ptr is checked *not* the actual location. These are guaranteed to
     /// lie at 64 byte cache line boundaries.
-    pub fn from_persistent_ptr(ptr: PalPtr, size: u32) -> Self {
+    pub fn from_persistent_ptr(mut ptr: PalPtr<u8>, size: u32) -> Self {
         assert_eq!(size as usize % BLOCK_SIZE, 0);
         let padded_size = Block::round_up_from_bytes(size);
         let aligned_buf = AlignedBuf {
             buf: Arc::new(UnsafeCell::new(AlignedStorage {
-                ptr: ptr.load() as *mut u8,
+                ptr: std::ptr::addr_of_mut!(*ptr.load_mut()),
                 capacity: padded_size,
                 is_persistent: true,
             })),

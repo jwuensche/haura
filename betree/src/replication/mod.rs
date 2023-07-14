@@ -42,25 +42,28 @@ use zstd_safe::WriteBuf;
 
 mod lru;
 mod lru_worker;
+// mod tree;
 use lru::Plru;
 use serde::{Deserialize, Serialize};
 
 use crate::buffer::Buf;
 
+use self::lru::PlruNode;
+
 /// A pointer to a region in persistent memory.
-pub struct Persistent<T>(NonNull<T>);
+pub struct Persistent<T>(PalPtr<T>);
 // Pointer to persistent memory can be assumed to be non-thread-local
 unsafe impl<T> Send for Persistent<T> {}
 impl<T> Deref for Persistent<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { self.0.as_ref() }
+        unsafe { self.0.load() }
     }
 }
 impl<T> DerefMut for Persistent<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { self.0.as_mut() }
+        unsafe { self.0.load_mut() }
     }
 }
 
@@ -99,15 +102,15 @@ impl<K, T> Drop for PersistentCache<K, T> {
 }
 
 pub struct PCacheRoot<T> {
-    map: BTreeMap<u64, PCacheMapEntry, Pal>,
+    map: BTreeMap<u64, PCacheMapEntry<T>, Pal>,
     lru: RwLock<Plru<T>>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PCacheMapEntry {
+#[derive(Debug)]
+pub struct PCacheMapEntry<T> {
     size: usize,
-    lru_node: PalPtr,
-    data: PalPtr,
+    lru_node: PalPtr<PlruNode<T>>,
+    data: PalPtr<u8>,
 }
 
 /// Configuration for a persistent cache.
@@ -133,7 +136,7 @@ impl<'a, K, T: Clone> PersistentCacheInsertion<'a, K, T> {
     /// initiated anew.
     pub fn insert<F>(self, f: F) -> Result<(), PMapError>
     where
-        F: Fn(&T, &[u8]) -> Result<(), crate::vdev::Error>,
+        F: Fn(&T, Buf) -> Result<(), crate::vdev::Error>,
     {
         loop {
             let key = {
@@ -146,7 +149,9 @@ impl<'a, K, T: Clone> PersistentCacheInsertion<'a, K, T> {
                         let data = unsafe {
                             core::slice::from_raw_parts(entry.data.load() as *const u8, entry.size)
                         };
-                        if f(baggage, data).is_err() {
+
+                        let buf = Buf::from_persistent_ptr(entry.data, entry.size as u32);
+                        if f(baggage, buf).is_err() {
                             return Err(PMapError::ExternalError("Writeback failed".into()));
                         }
                         key
@@ -210,50 +215,41 @@ impl<K: Hash, T: Send + 'static> PersistentCache<K, T> {
     pub fn open<P: Into<std::path::PathBuf>>(path: P) -> Result<Self, PMapError> {
         let pal = Pal::open(path.into()).unwrap();
         let root = pal.root(size_of::<PCacheRoot<T>>()).unwrap();
-        assert!(!root.load().is_null());
-        if let Some(root) = NonNull::new(root.load() as *mut PCacheRoot<T>) {
-            let (tx, rx) = crossbeam_channel::unbounded();
-            let root_lru = Persistent(root.clone());
-            let hndl = std::thread::spawn(move || lru_worker::main(rx, root_lru));
-            let root = Persistent(root);
-            Ok(Self {
-                pal,
-                tx,
-                root,
-                hndl: Some(hndl),
-                key_type: PhantomData::default(),
-            })
-        } else {
-            Err(PMapError::DoesNotExist)
-        }
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let root_lru = Persistent(root.clone());
+        let hndl = std::thread::spawn(move || lru_worker::main(rx, root_lru));
+        let root = Persistent(root);
+        Ok(Self {
+            pal,
+            tx,
+            root,
+            hndl: Some(hndl),
+            key_type: PhantomData::default(),
+        })
     }
 
     /// Create a new [PersistentCache] in the specified path. Fails if underlying resources are not valid.
     pub fn create<P: Into<std::path::PathBuf>>(path: P, size: usize) -> Result<Self, PMapError> {
         let mut pal = Pal::create(path.into(), size, 0o666).unwrap();
-        let root = pal.root(size_of::<PCacheRoot<T>>()).unwrap();
-        assert!(!root.load().is_null());
-        if let Some(root) = NonNull::new(root.load() as *mut PCacheRoot<T>) {
-            unsafe {
-                root.as_ptr().write_unaligned(PCacheRoot {
-                    lru: RwLock::new(Plru::init(size as u64)),
-                    map: BTreeMap::new_in(pal.clone()),
-                })
-            };
-            let (tx, rx) = crossbeam_channel::unbounded();
-            let root_lru = Persistent(root.clone());
-            let hndl = std::thread::spawn(move || lru_worker::main(rx, root_lru));
-            let mut root = Persistent(root);
-            Ok(Self {
-                pal,
-                tx,
-                root,
-                hndl: Some(hndl),
-                key_type: PhantomData::default(),
-            })
-        } else {
-            Err(PMapError::DoesNotExist)
-        }
+        let mut root: PalPtr<PCacheRoot<T>> = pal.root(size_of::<PCacheRoot<T>>()).unwrap();
+        root.init(
+            &PCacheRoot {
+                lru: RwLock::new(Plru::init(size as u64)),
+                map: BTreeMap::new_in(pal.clone()),
+            },
+            std::mem::size_of::<PCacheRoot<T>>(),
+        );
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let root_lru = Persistent(root.clone());
+        let hndl = std::thread::spawn(move || lru_worker::main(rx, root_lru));
+        let mut root = Persistent(root);
+        Ok(Self {
+            pal,
+            tx,
+            root,
+            hndl: Some(hndl),
+            key_type: PhantomData::default(),
+        })
     }
 
     /// Fetch an entry from the hashmap.
@@ -261,7 +257,7 @@ impl<K: Hash, T: Send + 'static> PersistentCache<K, T> {
         let mut hasher = XxHash64::default();
         key.hash(&mut hasher);
         let hash = hasher.finish();
-        let res = self.root.map.get(&hash).cloned();
+        let res = self.root.map.get(&hash);
         if let Some(entry) = res {
             self.tx.send(lru_worker::Msg::Touch(entry.lru_node));
             // self.root.lru.touch(&entry.lru_node)?;
@@ -279,7 +275,7 @@ impl<K: Hash, T: Send + 'static> PersistentCache<K, T> {
         let mut hasher = XxHash64::default();
         key.hash(&mut hasher);
         let hash = hasher.finish();
-        let res = self.root.map.get(&hash).cloned();
+        let res = self.root.map.get(&hash);
         if let Some(entry) = res {
             self.tx.send(lru_worker::Msg::Touch(entry.lru_node));
             // self.root.lru.touch(&entry.lru_node)?;

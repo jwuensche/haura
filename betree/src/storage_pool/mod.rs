@@ -58,7 +58,7 @@ pub trait StoragePoolLayer: Clone + Send + Sync + 'static {
     /// Issues a write request that might happen in the background.
     fn begin_write(&self, data: Buf, offset: DiskOffset) -> VdevResult<()>;
 
-    fn begin_foo<F>(&self, offset: DiskOffset, f: F) -> VdevResult<()>
+    fn begin_write_offload<F>(&self, offset: DiskOffset, f: F) -> VdevResult<()>
     where
         F: FnOnce() + Send + 'static;
 

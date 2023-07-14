@@ -171,6 +171,19 @@ where
         let obj = CacheValueRef::write(entry);
 
         if let ObjRef::Unmodified(ptr, ..) = replace(or, ObjRef::Modified(mid, pk)) {
+            // Deallocate old-region and remove from cache
+            if let Some(pcache_mtx) = &self.persistent_cache {
+                let pcache = pcache_mtx.read();
+                let res = pcache.get(ptr.offset().clone()).is_ok();
+                drop(pcache);
+                if res {
+                    // FIXME: Offload this lock to a different thread
+                    // This operation is only tangantely important for the
+                    // operation here and not time critical.
+                    let mut pcache = pcache_mtx.write();
+                    pcache.remove(ptr.offset().clone()).unwrap();
+                }
+            }
             self.copy_on_write(ptr, CopyOnWriteReason::Steal, or.index().clone());
         }
         Ok(Some(obj))
@@ -370,24 +383,34 @@ where
                             return Ok(());
                         }
                     }
-
-                    warn!("Entry would need to be written to persistent cache but procedure unimplemented!");
-
-                    // TODO: Compress and write-out entry
-                    // let mut pcache = pcache_mtx.write();
-                    // let mut buf = BufWrite::with_capacity(Block(1));
-                    // object.value_mut().get_mut().pack(&mut buf)?;
-                    // let _ = pcache.remove(offset);
-                    // pcache
-                    //     .prepare_insert(offset, &vec, None)
-                    //     .insert(|maybe_offset, data| {
-                    //         // TODO: Write eventually not synced data to disk finally.
-                    //         if let Some(offset) = maybe_offset {
-                    //             self.pool
-                    //                 .begin_write(Buf::from_zero_padded(data.to_vec()), *offset)?;
-                    //         }
-                    //         Ok(())
-                    //     })?;
+                    // We need to compress data here to ensure compatability
+                    // with the other branch going through the write back
+                    // procedure.
+                    let compression = &self.default_compression;
+                    let compressed_data = {
+                        let mut state = compression.new_compression()?;
+                        {
+                            object.value().read().pack(&mut state)?;
+                            drop(object);
+                        }
+                        state.finish()
+                    };
+                    let away = Arc::clone(pcache_mtx);
+                    // Arc to storage pool
+                    let pool = self.pool.clone();
+                    self.pool.begin_write_offload(offset, move || {
+                        let mut pcache = away.write();
+                        let _ = pcache.remove(offset);
+                        pcache
+                            .prepare_insert(offset, compressed_data, None)
+                            .insert(|maybe_offset, buf| {
+                                if let Some(offset) = maybe_offset {
+                                    pool.begin_write(buf, *offset)?;
+                                }
+                                Ok(())
+                            })
+                            .unwrap();
+                    })?;
                 }
                 return Ok(());
             }
@@ -483,23 +506,22 @@ where
         if !skip_write_back {
             self.pool.begin_write(compressed_data, offset)?;
         } else {
-            // Cheap copy due to rc
+            // Cheap copy
             let bar = compressed_data.clone();
             #[cfg(feature = "nvm")]
             if let Some(ref pcache_mtx) = self.persistent_cache {
                 let away = Arc::clone(pcache_mtx);
-                self.pool.begin_foo(offset, move || {
+                // Arc to storage pool
+                let pool = self.pool.clone();
+                self.pool.begin_write_offload(offset, move || {
                     let mut pcache = away.write();
                     let _ = pcache.remove(offset);
                     pcache
                         .prepare_insert(offset, bar, None)
-                        .insert(|maybe_offset, data| {
-                            // TODO: Deduplicate this?
-                            // if let Some(offset) = maybe_offset {
-                            //     self.pool
-                            //         .begin_write(Buf::from_zero_padded(data.to_vec()), *offset)?;
-                            // }
-                            panic!("This should not have happnened in the debug run!");
+                        .insert(|maybe_offset, buf| {
+                            if let Some(offset) = maybe_offset {
+                                pool.begin_write(buf, *offset)?;
+                            }
                             Ok(())
                         })
                         .unwrap();
