@@ -3,6 +3,7 @@ use errno::errno;
 use std::alloc::{AllocError, Allocator};
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::{ffi::c_void, ptr::NonNull, sync::Arc};
 use thiserror::Error;
 
@@ -34,7 +35,7 @@ impl Into<AllocError> for PalError {
 
 unsafe impl Allocator for Pal {
     fn allocate(&self, layout: std::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let mut ptr = self.allocate(layout.size()).map_err(|_| AllocError)?;
+        let mut ptr: PalPtr<u8> = self.allocate(layout.size()).map_err(|_| AllocError)?;
         Ok(
             NonNull::new(unsafe { core::slice::from_raw_parts_mut(ptr.load_mut(), layout.size()) })
                 .ok_or_else(|| AllocError)?,
@@ -77,6 +78,14 @@ impl<T> PartialEq for PalPtr<T> {
         self.inner == other.inner && self.size == other.size
     }
 }
+
+// impl<T> Deref for PalPtr<T> {
+//     type Target = T;
+//
+//     fn deref(&self) -> &Self::Target {
+//         self.load()
+//     }
+// }
 
 impl<T> Eq for PalPtr<T> {}
 
