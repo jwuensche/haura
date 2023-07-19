@@ -217,9 +217,17 @@ impl Pal {
         unsafe { pmemobj_close(self.pool.as_ptr()) };
     }
 
+    pub fn allocate_variable<T>(&self, v: T) -> Result<PalPtr<T>, PalError> {
+        let mut ptr = self.allocate(std::mem::size_of_val(&v))?;
+        assert!(ptr.size < 8192);
+        ptr.init(&v, std::mem::size_of_val(&v));
+        Ok(ptr)
+    }
+
     /// Allocate an area of size in the persistent memory. Allocations are
     /// always guaranteed to be cache line aligned for Optane PMem (64 bytes).
     pub fn allocate<T>(&self, size: usize) -> Result<PalPtr<T>, PalError> {
+        assert!(size < 8192);
         let mut oid = std::mem::MaybeUninit::<PMEMoid>::uninit();
         if unsafe {
             haura_alloc(

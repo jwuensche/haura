@@ -42,6 +42,7 @@ use zstd_safe::WriteBuf;
 
 mod lru;
 mod lru_worker;
+mod shift_array;
 mod tree;
 use lru::Plru;
 use serde::{Deserialize, Serialize};
