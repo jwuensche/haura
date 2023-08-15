@@ -33,7 +33,6 @@ impl<K: std::fmt::Debug + Ord + Clone, V: std::fmt::Debug> std::fmt::Debug for N
     }
 }
 
-#[derive(Debug)]
 pub enum Link<K, V> {
     Entry(V),
     Child(PalPtr<Node<K, V>>),
@@ -63,124 +62,128 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
     pub fn get(&self, key: &K) -> Option<&V> {
         let mut node = &self.root;
         loop {
-            dbg!(node);
+            // dbg!(node);
+            if node.load().children.size() > 100 {
+                println!("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ LINK IS BROKEN $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$");
+                dbg!(node);
+                println!("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$");
+            }
             match node.load().walk(key) {
                 NodeWalk::Miss => return None,
                 NodeWalk::Found(idx) => return node.load().get(idx),
-                NodeWalk::Child(idx) => {
-                    match node.load().children.get(idx).unwrap() {
-                        Link::Entry(_) => unreachable!(),
-                        Link::Child(ref n) => node = n,
-                        // Child::Node(ref n) => node = n,
-                        // Child::Leaf => unreachable!(),
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn remove(&mut self, key: &K) {
-        let mut node = &mut self.root;
-        let mut path = vec![];
-        loop {
-            path.push(node.clone());
-            match node.load().walk(&key) {
-                NodeWalk::Miss => break,
-                NodeWalk::Found(_) => {
-                    // Found leaf containing node, escalate removal upwards until no more changes required
-                    //
-                    // Each deletion can have multiple cases:
-                    //
-                    // - Leafs are fine (OK)
-                    // - Leafs are underfilled:
-                    //  - Move elements from neighboring leafs (left or right) and change pivot elements accordingly
-                    //  - All other leafs are of size MIN, merge children.
-                    // - Parents contain key as index: Delete and replace with highest element from left child
-
-                    if node.load_mut().remove(key) {
-                        // Treat small leaf
-                        // 1. Check if left or right child has enough elements
-                        if path.is_empty() {
-                            // emptied root node
-                            return;
-                        }
-                        let mut parent = path.last_mut().unwrap().load_mut();
-                        let idx = match parent.walk(key) {
-                            NodeWalk::Child(idx) => idx,
-                            _ => unreachable!(),
-                        };
-
-                        if idx > 0
-                            && parent
-                                .children
-                                .get_mut(idx - 1)
-                                .unwrap()
-                                .assert_child()
-                                .load()
-                                .size()
-                                > MIN
-                        {
-                            // Pick from left child
-                            let left = parent
-                                .children
-                                .get_mut(idx - 1)
-                                .unwrap()
-                                .assert_child()
-                                .load_mut();
-
-                            let new_child = left.children.pop_back().unwrap();
-                            let new_pivot = left.pivots.pop_back().unwrap();
-                            node.load_mut().children.push_front(new_child);
-                            node.load_mut().pivots.push_front(new_pivot);
-                            *parent.pivots.get_mut(idx).unwrap() = left.pivot_high();
-                        }
-
-                        if idx + 1 < B
-                            && parent
-                                .children
-                                .get_mut(idx + 1)
-                                .unwrap()
-                                .assert_child()
-                                .load()
-                                .size()
-                                > MIN
-                        {
-                            // Pick from right child
-                            let right = parent
-                                .children
-                                .get_mut(idx + 1)
-                                .unwrap()
-                                .assert_child()
-                                .load_mut();
-
-                            let new_child = right.children.pop_front().unwrap();
-                            let new_pivot = right.pivots.pop_front().unwrap();
-                            node.load_mut().children.push_back(new_child);
-                            node.load_mut().pivots.push_back(new_pivot);
-                            *parent.pivots.get_mut(idx).unwrap() = node.load().pivot_high();
-                        }
-
-                        todo!("Merge children")
-                    } else {
-                        // Remove from parents if they contain the key
-                        for mut n in path.into_iter() {
-                            assert!(!n.load_mut().remove(key))
-                        }
-                    }
-                    break;
-                }
-                NodeWalk::Child(idx) => match node.load_mut().children.get_mut(idx).unwrap() {
+                NodeWalk::Child(idx) => match node.load().children.get(idx).unwrap() {
                     Link::Entry(_) => unreachable!(),
-                    Link::Child(ref mut n) => node = n,
+                    Link::Child(ref n) => node = n,
                 },
             }
         }
     }
 
+    // pub fn remove(&mut self, key: &K) {
+    //     let mut node = &mut self.root;
+    //     let mut path = vec![];
+    //     loop {
+    //         path.push(node.clone());
+    //         match node.load().walk(&key) {
+    //             NodeWalk::Miss => break,
+    //             NodeWalk::Found(_) => {
+    //                 // Found leaf containing node, escalate removal upwards until no more changes required
+    //                 //
+    //                 // Each deletion can have multiple cases:
+    //                 //
+    //                 // - Leafs are fine (OK)
+    //                 // - Leafs are underfilled:
+    //                 //  - Move elements from neighboring leafs (left or right) and change pivot elements accordingly
+    //                 //  - All other leafs are of size MIN, merge children.
+    //                 // - Parents contain key as index: Delete and replace with highest element from left child
+
+    //                 if node.load_mut_safe().remove(key) {
+    //                     // Treat small leaf
+    //                     // 1. Check if left or right child has enough elements
+    //                     if path.is_empty() {
+    //                         // emptied root node
+    //                         return;
+    //                     }
+    //                     let mut parent = path.last_mut().unwrap().load_mut_safe();
+    //                     let idx = match parent.walk(key) {
+    //                         NodeWalk::Child(idx) => idx,
+    //                         _ => unreachable!(),
+    //                     };
+
+    //                     if idx > 0
+    //                         && parent
+    //                             .children
+    //                             .get_mut(idx - 1)
+    //                             .unwrap()
+    //                             .assert_child()
+    //                             .load()
+    //                             .size()
+    //                             > MIN
+    //                     {
+    //                         // Pick from left child
+    //                         let left = parent
+    //                             .children
+    //                             .get_mut(idx - 1)
+    //                             .unwrap()
+    //                             .assert_child()
+    //                             .load_mut();
+
+    //                         let new_child = left.children.pop_back().unwrap();
+    //                         let new_pivot = left.pivots.pop_back().unwrap();
+    //                         node.load_mut().children.push_front(new_child);
+    //                         node.load_mut().pivots.push_front(new_pivot);
+    //                         *parent.pivots.get_mut(idx).unwrap() = left.pivot_high();
+    //                     }
+
+    //                     if idx + 1 < B
+    //                         && parent
+    //                             .children
+    //                             .get_mut(idx + 1)
+    //                             .unwrap()
+    //                             .assert_child()
+    //                             .load()
+    //                             .size()
+    //                             > MIN
+    //                     {
+    //                         // Pick from right child
+    //                         let right = parent
+    //                             .children
+    //                             .get_mut(idx + 1)
+    //                             .unwrap()
+    //                             .assert_child()
+    //                             .load_mut();
+
+    //                         let new_child = right.children.pop_front().unwrap();
+    //                         let new_pivot = right.pivots.pop_front().unwrap();
+    //                         node.load_mut().children.push_back(new_child);
+    //                         node.load_mut().pivots.push_back(new_pivot);
+    //                         *parent.pivots.get_mut(idx).unwrap() = node.load().pivot_high();
+    //                     }
+
+    //                     todo!("Merge children")
+    //                 } else {
+    //                     // Remove from parents if they contain the key
+    //                     for mut n in path.into_iter() {
+    //                         assert!(!n.load_mut_safe().remove(key))
+    //                     }
+    //                 }
+    //                 break;
+    //             }
+    //             NodeWalk::Child(idx) => {
+    //                 match node.clone().load_mut_safe().children.get_mut(idx).unwrap() {
+    //                     Link::Entry(_) => unreachable!(),
+    //                     Link::Child(ref mut n) => node = n,
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
     pub fn insert(&mut self, key: K, val: V, pal: &Pal) {
-        if let Some((k, v, n)) = self.insert_from(key, val, pal, self.root.clone()) {
-            assert!(self.insert_from(k, v, pal, n).is_none());
+        if let Some((k, v)) = self.insert_from(key, val, pal, self.root.clone()) {
+            assert!(self.insert_from(k, v, pal, self.root).is_none());
         }
+        println!("inserted");
     }
 
     fn insert_from(
@@ -189,15 +192,16 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
         val: V,
         pal: &Pal,
         mut from: PalPtr<Node<K, V>>,
-    ) -> Option<(K, V, PalPtr<Node<K, V>>)> {
-        let mut node = &mut from;
+    ) -> Option<(K, V)> {
+        println!("insert from");
+        let mut node = from;
         let mut path = vec![];
         loop {
             path.push(node.clone());
             match node.load().walk(&key) {
                 NodeWalk::Miss => {
                     return if let Some((median, new_node, value)) =
-                        node.load_mut().insert(key.clone(), val)
+                        node.load_mut_safe().insert(key.clone(), val)
                     {
                         // Insert facilitated a split, insert new node into parent
                         let mut pair = Some((median, new_node)).map(|(key, new_node)| {
@@ -205,14 +209,17 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
                             (key, pal.allocate_variable(new_node).unwrap())
                         });
                         for mut cur_node in path.iter_mut().rev().skip(1) {
+                            dbg!(&cur_node);
                             if let Some((key, new_node)) = pair {
-                                pair = cur_node.load_mut().escalate(key, new_node).map(
-                                    |(key, new_node)| {
-                                        // Allocate the new node
-                                        (key, pal.allocate_variable(new_node).unwrap())
-                                    },
-                                );
-                                node = cur_node;
+                                dbg!(cur_node.load().children.size());
+                                // let foo = pal.allocate::<i32>(64);
+                                // dbg!(cur_node.load().children.size());
+                                let mut foo = cur_node.load_mut_safe();
+                                pair = foo.escalate(key, new_node).map(|(key, new_node)| {
+                                    // Allocate the new node
+                                    (key, pal.allocate_variable(new_node).unwrap())
+                                });
+                                dbg!(foo.children.size());
                             } else {
                                 break;
                             }
@@ -224,18 +231,19 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
                             let mut new_root = Node::new();
                             new_root.pivots.push_front(key);
                             // new_root.pivots.push_back(new_node.load().pivot_high());
+                            println!("Old root: {:?}", self.root);
                             new_root.children.push_front(Link::Child(self.root));
                             new_root.children.push_back(Link::Child(new_node));
                             self.root = pal.allocate_variable(new_root).unwrap();
-                            node = &mut self.root;
+                            dbg!(self.root);
                         }
-                        Some((key, value, node.clone()))
+                        Some((key, value))
                     } else {
                         None
                     };
                 }
                 NodeWalk::Found(idx) => {
-                    node.load_mut()
+                    node.load_mut_safe()
                         .children
                         .get_mut(idx)
                         .map(|entry| match entry {
@@ -244,10 +252,12 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
                         });
                     return None;
                 }
-                NodeWalk::Child(idx) => match node.load_mut().children.get_mut(idx).unwrap() {
-                    Link::Entry(_) => unreachable!(),
-                    Link::Child(ref mut n) => node = n,
-                },
+                NodeWalk::Child(idx) => {
+                    match node.clone().load_mut_safe().children.get_mut(idx).unwrap() {
+                        Link::Entry(_) => unreachable!(),
+                        Link::Child(ref mut n) => node = n.clone(),
+                    }
+                }
             }
         }
     }
@@ -313,10 +323,15 @@ impl<K: Ord + Clone, V> Node<K, V> {
     pub fn split(&mut self) -> (K, Node<K, V>) {
         assert!(self.pivots.size() == NUM_KEYS);
         assert!(self.children.size() >= NUM_KEYS);
-        const idx: usize = NUM_KEYS / 2 + NUM_KEYS % 2;
+        const idx: usize = NUM_KEYS / 2 + NUM_KEYS % 2 - 1;
+        dbg!(idx);
 
         let right_pivots = self.pivots.split_after(idx);
         let right_children = self.children.split_after(idx);
+        dbg!(self.pivots.size());
+        dbg!(self.children.size());
+        dbg!(right_pivots.size());
+        dbg!(right_children.size());
 
         let right = Self {
             pivots: right_pivots,
@@ -328,8 +343,6 @@ impl<K: Ord + Clone, V> Node<K, V> {
     }
 
     pub fn escalate(&mut self, key: K, right: PalPtr<Node<K, V>>) -> Option<(K, Node<K, V>)> {
-        dbg!(&self.pivots.size());
-        dbg!(&self.children.size());
         if self.pivots.size() <= NUM_KEYS && self.children.size() < B {
             println!("can buffer node");
             // Shift pivot and child
@@ -340,10 +353,13 @@ impl<K: Ord + Clone, V> Node<K, V> {
             // Children space is available, shift
             self.pivots.insert(idx, key);
             self.children.insert(idx + 1, Link::Child(right));
+            dbg!(self.children.size());
             None
         } else {
             let (upper, mut new_right) = self.split();
+            dbg!(self.children.size());
             assert!(new_right.escalate(key, right).is_none());
+            dbg!(self.children.size());
             Some((upper, new_right))
         }
     }
@@ -481,7 +497,6 @@ mod tests {
             println!("{id}");
             tree.insert(id, id, &pal);
             for n in 0..=id {
-                println!("id: {n}");
                 assert_eq!(tree.get(&n), Some(&n));
             }
         }

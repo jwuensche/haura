@@ -3,13 +3,15 @@ use errno::errno;
 use std::alloc::{AllocError, Allocator};
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::AtomicU64;
 use std::{ffi::c_void, ptr::NonNull, sync::Arc};
 use thiserror::Error;
 
 // A friendly persistent memory allocator.
 #[derive(Clone, Debug)]
 pub struct Pal {
+    pub allocations: Arc<AtomicU64>,
     pool: Arc<NonNull<pmemobjpool>>,
 }
 
@@ -118,6 +120,31 @@ impl PartialEq for PMEMoid {
 
 impl Eq for PMEMoid {}
 
+pub struct Fuck<'a, T> {
+    oid: &'a mut PalPtr<T>,
+    val: &'a mut T,
+}
+
+impl<'a, T> Deref for Fuck<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.val
+    }
+}
+
+impl<'a, T> DerefMut for Fuck<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.val
+    }
+}
+
+impl<'a, T> Drop for Fuck<'a, T> {
+    fn drop(&mut self) {
+        self.oid.persist()
+    }
+}
+
 impl<T> PalPtr<T> {
     /// Translate this persistent ptr to a volatile one.
     pub fn load(&self) -> &T {
@@ -126,6 +153,13 @@ impl<T> PalPtr<T> {
 
     pub fn load_mut(&mut self) -> &mut T {
         unsafe { (haura_direct(self.inner) as *mut T).as_mut().unwrap() }
+    }
+
+    pub fn load_mut_safe(&mut self) -> Fuck<T> {
+        Fuck {
+            val: unsafe { (haura_direct(self.inner) as *mut T).as_mut().unwrap() },
+            oid: self,
+        }
     }
 
     pub fn init(&mut self, src: *const T, count: usize) {
@@ -166,6 +200,17 @@ impl<T> PalPtr<T> {
     pub fn free(&mut self) {
         unsafe { pmemobj_free(&mut self.inner) }
     }
+
+    pub fn persist(&self) {
+        println!("Persisting {:?}", self.inner);
+        unsafe {
+            pmemobj_persist(
+                pmemobj_pool_by_oid(self.inner),
+                haura_direct(self.inner),
+                self.size,
+            )
+        };
+    }
 }
 
 // TODO: Impl Deref with typization?
@@ -198,6 +243,7 @@ impl Pal {
     fn new(pool: *mut pmemobjpool) -> Result<Self, PalError> {
         NonNull::new(pool)
             .map(|valid| Pal {
+                allocations: Arc::new(AtomicU64::new(0)),
                 pool: Arc::new(valid),
             })
             .ok_or_else(|| {
@@ -219,7 +265,6 @@ impl Pal {
 
     pub fn allocate_variable<T>(&self, v: T) -> Result<PalPtr<T>, PalError> {
         let mut ptr = self.allocate(std::mem::size_of_val(&v))?;
-        assert!(ptr.size < 8192);
         ptr.init(&v, std::mem::size_of_val(&v));
         Ok(ptr)
     }
@@ -227,7 +272,7 @@ impl Pal {
     /// Allocate an area of size in the persistent memory. Allocations are
     /// always guaranteed to be cache line aligned for Optane PMem (64 bytes).
     pub fn allocate<T>(&self, size: usize) -> Result<PalPtr<T>, PalError> {
-        assert!(size < 8192);
+        dbg!(self.allocations.load(std::sync::atomic::Ordering::Relaxed));
         let mut oid = std::mem::MaybeUninit::<PMEMoid>::uninit();
         if unsafe {
             haura_alloc(
@@ -249,6 +294,8 @@ impl Pal {
         if unsafe { oid_is_null(oid.assume_init_read()) } {
             return Err(PalError::NullEncountered);
         }
+        self.allocations
+            .fetch_add(size as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(PalPtr {
             inner: unsafe { oid.assume_init() },
             size,
