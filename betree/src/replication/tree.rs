@@ -63,11 +63,11 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
         let mut node = &self.root;
         loop {
             // dbg!(node);
-            if node.load().children.size() > 100 {
-                println!("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ LINK IS BROKEN $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$");
-                dbg!(node);
-                println!("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$");
-            }
+            // if node.load().children.size() > 100 {
+            //     println!("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ LINK IS BROKEN $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$");
+            //     dbg!(node);
+            //     println!("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$");
+            // }
             match node.load().walk(key) {
                 NodeWalk::Miss => return None,
                 NodeWalk::Found(idx) => return node.load().get(idx),
@@ -212,13 +212,15 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
                             dbg!(&cur_node);
                             if let Some((key, new_node)) = pair {
                                 dbg!(cur_node.load().children.size());
-                                // let foo = pal.allocate::<i32>(64);
+                                let foo = pal.allocate::<i32>(64);
+                                foo.unwrap().free();
                                 // dbg!(cur_node.load().children.size());
                                 let mut foo = cur_node.load_mut_safe();
                                 pair = foo.escalate(key, new_node).map(|(key, new_node)| {
                                     // Allocate the new node
                                     (key, pal.allocate_variable(new_node).unwrap())
                                 });
+                                assert!(foo.children.size() < 1000);
                                 dbg!(foo.children.size());
                             } else {
                                 break;
@@ -462,77 +464,77 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn new() {
-    //     let file = TestFile::new();
-    //     let mut pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
-    //     let tree: PBTree<u8, u8> = PBTree::new(&pal).unwrap();
-    // }
+    #[test]
+    fn new() {
+        let file = TestFile::new();
+        let mut pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
+        let tree: PBTree<u8, u8> = PBTree::new(&pal).unwrap();
+    }
 
-    // #[test]
-    // fn basic_insert() {
-    //     let file = TestFile::new();
-    //     let mut pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
-    //     let mut tree: PBTree<u8, u8> = PBTree::new(&pal).unwrap();
-    //     tree.insert(1, 1, &pal);
-    // }
+    #[test]
+    fn basic_insert() {
+        let file = TestFile::new();
+        let mut pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
+        let mut tree: PBTree<u8, u8> = PBTree::new(&pal).unwrap();
+        tree.insert(1, 1, &pal);
+    }
 
-    // #[test]
-    // fn basic_get() {
-    //     let file = TestFile::new();
-    //     let mut pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
-    //     let mut tree: PBTree<u8, u8> = PBTree::new(&pal).unwrap();
-    //     assert!(tree.get(&1).is_none());
-    //     tree.insert(1, 1, &pal);
-    //     assert_eq!(tree.get(&1), Some(&1));
-    // }
+    #[test]
+    fn basic_get() {
+        let file = TestFile::new();
+        let mut pal = Pal::create(file.path(), 32 * 1024 * 1024, 0o666).unwrap();
+        let mut tree: PBTree<u8, u8> = PBTree::new(&pal).unwrap();
+        assert!(tree.get(&1).is_none());
+        tree.insert(1, 1, &pal);
+        assert_eq!(tree.get(&1), Some(&1));
+    }
 
-    // #[test]
-    // fn seq_insert() {
-    //     let file = TestFile::new();
-    //     let mut pal = Pal::create(file.path(), 128 * 1024 * 1024, 0o666).unwrap();
-    //     let mut tree: PBTree<u8, u8> = PBTree::new(&pal).unwrap();
+    #[test]
+    fn seq_insert() {
+        let file = TestFile::new();
+        let mut pal = Pal::create(file.path(), 128 * 1024 * 1024, 0o666).unwrap();
+        let mut tree: PBTree<u8, u8> = PBTree::new(&pal).unwrap();
 
-    //     for id in 0..=255 {
-    //         println!("{id}");
-    //         tree.insert(id, id, &pal);
-    //         for n in 0..=id {
-    //             assert_eq!(tree.get(&n), Some(&n));
-    //         }
-    //     }
+        for id in 0..=255 {
+            println!("################ INSERTING ID: {id}");
+            tree.insert(id, id, &pal);
+            for n in 0..=id {
+                assert_eq!(tree.get(&n), Some(&n));
+            }
+        }
 
-    //     for id in 0..=255 {
-    //         assert_eq!(tree.get(&id), Some(&id));
-    //     }
-    //     dbg!(tree.root.load());
-    // }
+        for id in 0..=255 {
+            assert_eq!(tree.get(&id), Some(&id));
+        }
+        dbg!(tree.root.load());
+    }
 
-    // #[test]
-    // fn rnd_insert() {
-    //     let file = TestFile::new();
-    //     let mut pal = Pal::create(file.path(), 128 * 1024 * 1024, 0o666).unwrap();
-    //     let mut tree = PBTree::new(&pal).unwrap();
+    #[test]
+    fn rnd_insert() {
+        let file = TestFile::new();
+        let mut pal = Pal::create(file.path(), 128 * 1024 * 1024, 0o666).unwrap();
+        let mut tree = PBTree::new(&pal).unwrap();
 
-    //     use rand::Rng;
-    //     let mut rng = rand::thread_rng();
-    //     let vals = [0u8; 256].map(|_| rng.gen::<u16>());
-    //     let set = HashSet::from(vals);
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let vals = [0u8; 256].map(|_| rng.gen::<u16>());
+        let set = HashSet::from(vals);
 
-    //     let mut inserted = vec![];
-    //     for id in set.iter() {
-    //         dbg!(tree.root.load().count());
-    //         tree.insert(id, id, &pal);
-    //         dbg!(tree.root.load().count());
-    //         inserted.push(id);
-    //         for x in inserted.iter() {
-    //             if tree.get(x) != Some(x) {
-    //                 assert_eq!(x, &&0);
-    //             }
-    //         }
-    //     }
+        let mut inserted = vec![];
+        for id in set.iter() {
+            dbg!(tree.root.load().count());
+            tree.insert(id, id, &pal);
+            dbg!(tree.root.load().count());
+            inserted.push(id);
+            for x in inserted.iter() {
+                if tree.get(x) != Some(x) {
+                    assert_eq!(x, &&0);
+                }
+            }
+        }
 
-    //     for id in set.iter() {
-    //         assert_eq!(tree.get(&id), Some(&id));
-    //     }
-    // }
+        for id in set.iter() {
+            assert_eq!(tree.get(&id), Some(&id));
+        }
+    }
 }

@@ -46,6 +46,7 @@ unsafe impl Allocator for Pal {
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: std::alloc::Layout) {
         let mut oid = unsafe { pmemobj_oid(ptr.as_ptr() as *const c_void) };
+        println!("FREE");
         unsafe { pmemobj_free(&mut oid) }
     }
 }
@@ -265,14 +266,14 @@ impl Pal {
 
     pub fn allocate_variable<T>(&self, v: T) -> Result<PalPtr<T>, PalError> {
         let mut ptr = self.allocate(std::mem::size_of_val(&v))?;
-        ptr.init(&v, std::mem::size_of_val(&v));
+        assert!(unsafe { dbg!(pmemobj_alloc_usable_size(ptr.inner)) >= std::mem::size_of_val(&v) });
+        ptr.init(&v, dbg!(std::mem::size_of_val(&v)));
         Ok(ptr)
     }
 
     /// Allocate an area of size in the persistent memory. Allocations are
     /// always guaranteed to be cache line aligned for Optane PMem (64 bytes).
     pub fn allocate<T>(&self, size: usize) -> Result<PalPtr<T>, PalError> {
-        dbg!(self.allocations.load(std::sync::atomic::Ordering::Relaxed));
         let mut oid = std::mem::MaybeUninit::<PMEMoid>::uninit();
         if unsafe {
             haura_alloc(
@@ -285,7 +286,7 @@ impl Pal {
         } {
             let err = unsafe { std::ffi::CString::from_raw(pmemobj_errormsg() as *mut i8) };
             let err_msg = format!(
-                "Failed to create memory pool. filepath: {}",
+                "Failed to allocate memory. error: {}",
                 err.to_string_lossy()
             );
             return Err(PalError::AllocationFailed(err_msg));
@@ -294,10 +295,14 @@ impl Pal {
         if unsafe { oid_is_null(oid.assume_init_read()) } {
             return Err(PalError::NullEncountered);
         }
+        let oid = unsafe { oid.assume_init() };
+        let true_size = unsafe { pmemobj_alloc_usable_size(oid)};
+        dbg!(true_size);
         self.allocations
-            .fetch_add(size as u64, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(true_size as u64, std::sync::atomic::Ordering::Relaxed);
+        dbg!(self.allocations.load(std::sync::atomic::Ordering::Relaxed));
         Ok(PalPtr {
-            inner: unsafe { oid.assume_init() },
+            inner: oid,
             size,
             _phantom: PhantomData {},
         })
@@ -371,11 +376,29 @@ mod tests {
     }
 
     #[test]
-    fn alloc_vec_deque() {
+    fn alloc_batch() {
         let file = TestFile::new();
         const SIZE: usize = 64 * 1024 * 1024;
-        let pal = Pal::create(file.path(), 128 * 1024 * 1024, 0o666).unwrap();
-        let mut list: VecDeque<u8, Pal> = VecDeque::with_capacity_in(SIZE, pal);
+        let pal = Pal::create(file.path(), SIZE, 0o666).unwrap();
+
+        let mut allocs = Vec::new();
+        const NUM: usize = SIZE / 256;
+
+        for idx in 0..NUM {
+            println!("idx: {idx} / {NUM}");
+            let fancy_slice = [(NUM%256) as u8; 256];
+            let ptr = pal.allocate_variable(fancy_slice);
+            allocs.push(ptr.unwrap());
+            // unsafe { pmemobj_defrag(pal.pool.as_ptr(), allocs.iter_mut().map(|p| &mut p.inner as *mut pmemoid).collect::<Vec<_>>().as_mut_ptr(), allocs.len(), std::ptr::null_mut())};
+        }
+    }
+
+    #[test]
+    fn alloc_vec_deque() {
+        let file = TestFile::new();
+        const SIZE: usize = 300 * 1024 * 1024;
+        let pal = Pal::create(file.path(), 1 * 1024 * 1024 * 1024, 0o666).unwrap();
+        let mut list: VecDeque<u8, Pal> = VecDeque::with_capacity_in(32, pal);
         for _ in 0..SIZE {
             list.push_back(0);
         }
@@ -385,30 +408,34 @@ mod tests {
     fn alloc_btree_map() {
         let file = TestFile::new();
         {
-            let mut pal = Pal::create(file.path(), 128 * 1024 * 1024, 0o666).unwrap();
-            let map: BTreeMap<u8, u8, Pal> = BTreeMap::new_in(pal.clone());
-            let mut root_ptr: PalPtr<BTreeMap<u8, u8, Pal>> = pal
-                .root(std::mem::size_of::<BTreeMap<u8, u8, Pal>>())
+            const SIZE: usize = 512 * 1024 * 1024;
+            let mut pal = Pal::create(file.path(), SIZE, 0o666).unwrap();
+            let map: BTreeMap<u32, [u8; 256], Pal> = BTreeMap::new_in(pal.clone());
+            let mut root_ptr: PalPtr<BTreeMap<u32, [u8; 256], Pal>> = pal
+                .root(std::mem::size_of::<BTreeMap<u32, [u8; 256], Pal>>())
                 .unwrap();
-            root_ptr.init(&map, std::mem::size_of::<BTreeMap<u8, u8, Pal>>());
+
+            const NUM: usize = SIZE as usize / (4 + 256);
+            root_ptr.init(&map, std::mem::size_of::<BTreeMap<u32, [u8; 256], Pal>>());
             std::mem::forget(map);
-            let map: &mut BTreeMap<u8, u8, Pal> = root_ptr.load_mut();
-            for id in 0..100 {
-                map.insert(id, id);
+            let map: &mut BTreeMap<u32, [u8; 256], Pal> = root_ptr.load_mut();
+            for id in 0..NUM {
+                println!("Progress: {}%", id as f32 / NUM as f32 * 100f32);
+                map.insert(id as u32, [(id%256) as u8; 256]);
             }
-            for id in 100..0 {
-                assert_eq!(map.get(&id), Some(&id));
+            for id in 255..0 {
+                assert_eq!(map.get(&id), Some(&[(id%256)as u8; 256]));
             }
             pal.close();
         }
         {
             let mut pal = Pal::open(file.path()).unwrap();
             let mut root_ptr = pal
-                .root(std::mem::size_of::<BTreeMap<u8, u8, Pal>>())
+                .root(std::mem::size_of::<BTreeMap<u32, [u8; 256], Pal>>())
                 .unwrap();
-            let map: &mut BTreeMap<u8, u8, Pal> = root_ptr.load_mut();
-            for id in 100..0 {
-                assert_eq!(map.get(&id), Some(&id));
+            let map: &mut BTreeMap<u32, [u8; 256], Pal> = root_ptr.load_mut();
+            for id in 255..0 {
+                assert_eq!(map.get(&id), Some(&[(id%256)as u8; 256]));
             }
             pal.close();
         }
