@@ -1,6 +1,6 @@
 use super::{Persistent, PREFIX_LRU};
-use pmem_hashmap::{allocator::PalPtr, PMap, PMapError};
-use std::{marker::PhantomData, mem::size_of, ptr::NonNull};
+use pmem_hashmap::{allocator::{PalPtr, PalPtrMutHandle}, PMap, PMapError};
+use std::{marker::PhantomData, mem::size_of, ptr::NonNull, ops::DerefMut};
 
 /// Fetch and cast a pmem pointer to a [PlruNode].
 ///
@@ -54,12 +54,16 @@ impl<T> Plru<T> {
 
         self.cut_node_and_stitch(node_ptr)?;
 
-        // Fixate new head
+
+        { // Fixate new head
+            {
         let mut old_head_ptr = self.head.as_mut().expect("Invalid State");
-        let old_head: &mut PlruNode<T> = old_head_ptr.load_mut();
+        let mut old_head = old_head_ptr.load_mut();
         old_head.fwd = Some(node_ptr.clone());
-        let node: &mut PlruNode<T> = node_ptr.load_mut();
+            }
+        let mut node = node_ptr.load_mut();
         node.back = self.head.clone();
+        }
         self.head = Some(node_ptr.clone());
 
         Ok(())
@@ -73,21 +77,24 @@ impl<T> Plru<T> {
         size: u64,
         baggage: T,
     ) -> Result<(), PMapError> {
-        let new_node = node_ptr.load_mut();
-        new_node.fwd = None;
-        new_node.back = self.head.clone();
-        new_node.size = size;
-        new_node.key = baggage;
-        new_node.hash = hash;
+        {
+            let mut new_node = node_ptr.load_mut();
+            new_node.fwd = None;
+            new_node.back = self.head.clone();
+            new_node.size = size;
+            new_node.key = baggage;
+            new_node.hash = hash;
+        }
 
         if let Some(ref mut head_ptr) = self.head.as_mut() {
-            let head: &mut PlruNode<T> = head_ptr.load_mut();
+            let mut head = head_ptr.load_mut();
             head.fwd = Some(node_ptr.clone());
-            self.head = Some(node_ptr);
+            drop(head);
+            self.head = Some(node_ptr.clone());
         } else {
             // no head existed yet -> newly initialized list
             self.head = Some(node_ptr.clone());
-            self.tail = Some(node_ptr);
+            self.tail = Some(node_ptr.clone());
         }
         self.size += size;
         self.count += 1;
@@ -105,14 +112,16 @@ impl<T> Plru<T> {
     }
 
     fn cut_node_and_stitch(&mut self, node_ptr: &mut PalPtr<PlruNode<T>>) -> Result<(), PMapError> {
-        let node: &mut PlruNode<T> = node_ptr.load_mut();
+        let mut node = node_ptr.load_mut();
+        let fwd_bck = node.back.clone();
         if let Some(ref mut forward_ptr) = node.fwd.as_mut() {
-            let forward: &mut PlruNode<T> = forward_ptr.load_mut();
-            forward.back = node.back.clone();
+            let mut forward = forward_ptr.load_mut();
+            forward.back = fwd_bck;
         }
+        let bck_fwd = node.back.clone();
         if let Some(ref mut back_ptr) = node.back.as_mut() {
-            let back: &mut PlruNode<T> = back_ptr.load_mut();
-            back.fwd = node.fwd.clone();
+            let mut back = back_ptr.load_mut();
+            back.fwd = bck_fwd;
         }
         drop(node);
         let node = node_ptr.load();
@@ -124,7 +133,7 @@ impl<T> Plru<T> {
             self.tail = node.fwd.clone();
         }
 
-        let node: &mut PlruNode<T> = node_ptr.load_mut();
+        let mut node = node_ptr.load_mut();
         node.fwd = None;
         node.back = None;
 
@@ -256,7 +265,7 @@ mod tests {
             &Plru::<()>::init(32 * 1024 * 1024),
             std::mem::size_of::<Plru<()>>(),
         );
-        let plru = root.load_mut();
+        let mut plru = root.load_mut();
 
         // Insert 3 entries
         for id in 0..3 {
@@ -276,7 +285,7 @@ mod tests {
             &Plru::<()>::init(32 * 1024 * 1024),
             std::mem::size_of::<Plru<()>>(),
         );
-        let plru = root.load_mut();
+        let mut plru = root.load_mut();
 
         // Insert 3 entries
         let mut ptr = vec![];
@@ -303,7 +312,7 @@ mod tests {
             &Plru::<()>::init(32 * 1024 * 1024),
             std::mem::size_of::<Plru<()>>(),
         );
-        let plru = root.load_mut();
+        let mut plru = root.load_mut();
 
         // Insert 3 entries
         let mut ptr = vec![];
@@ -331,7 +340,7 @@ mod tests {
             &Plru::<()>::init(32 * 1024 * 1024),
             std::mem::size_of::<Plru<()>>(),
         );
-        let plru = root.load_mut();
+        let mut plru = root.load_mut();
 
         // Insert 3 entries
         let mut ptr = vec![];
@@ -362,7 +371,7 @@ mod tests {
                 &Plru::<()>::init(32 * 1024 * 1024),
                 std::mem::size_of::<Plru<()>>(),
             );
-            let plru = root.load_mut();
+            let mut plru = root.load_mut();
 
             // Insert 3 entries
             for id in 0..3 {
@@ -378,7 +387,7 @@ mod tests {
         {
             let mut pal = Pal::open(file.path()).unwrap();
             let mut root: PalPtr<Plru<()>> = pal.root(size_of::<Plru<()>>()).unwrap();
-            let plru = root.load_mut();
+            let mut plru = root.load_mut();
 
             assert_eq!(plru.head, Some(ptr.last().unwrap().clone()));
             assert_eq!(plru.tail, Some(ptr.first().unwrap().clone()));

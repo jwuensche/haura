@@ -24,7 +24,7 @@ const PREFIX_LRU_ROOT: u8 = 2;
 use crossbeam_channel::Sender;
 use parking_lot::RwLock;
 use pmem_hashmap::{
-    allocator::{Pal, PalPtr},
+    allocator::{Pal, PalPtr, PalPtrMutHandle},
     PMap, PMapError,
 };
 use std::{
@@ -55,16 +55,18 @@ use self::lru::PlruNode;
 pub struct Persistent<T>(PalPtr<T>);
 // Pointer to persistent memory can be assumed to be non-thread-local
 unsafe impl<T> Send for Persistent<T> {}
+
+impl<T> Persistent<T> {
+    pub fn deref_mut(&mut self) -> PalPtrMutHandle<T> {
+        self.0.load_mut()
+    }
+}
+
 impl<T> Deref for Persistent<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
         unsafe { self.0.load() }
-    }
-}
-impl<T> DerefMut for Persistent<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { self.0.load_mut() }
     }
 }
 
@@ -161,7 +163,7 @@ impl<'a, K, T: Clone> PersistentCacheInsertion<'a, K, T> {
                 }
             };
             // Finally actually remove the entries
-            let mut entry = self.cache.root.map.remove(&key).unwrap();
+            let mut entry = self.cache.root.deref_mut().map.remove(&key).unwrap();
             entry.data.free();
             self.cache.tx.send(lru_worker::Msg::Remove(entry.lru_node));
             // self.cache.root.lru.remove(&mut entry.lru_node)?;
@@ -206,7 +208,7 @@ impl<'a, K, T: Clone> PersistentCacheInsertion<'a, K, T> {
             data: data_ptr,
             size: data.len(),
         };
-        self.cache.root.map.insert(self.key, map_entry);
+        self.cache.root.deref_mut().map.insert(self.key, map_entry);
         Ok(())
     }
 }
@@ -309,7 +311,7 @@ impl<K: Hash, T: Send + 'static> PersistentCache<K, T> {
         let mut hasher = XxHash64::default();
         key.hash(&mut hasher);
         let hash = hasher.finish();
-        if let Some(mut entry) = self.root.map.remove(&hash) {
+        if let Some(mut entry) = self.root.deref_mut().map.remove(&hash) {
             self.tx.send(lru_worker::Msg::Remove(entry.lru_node));
             // self.root.lru.remove(&mut entry.lru_node).unwrap();
             // entry.lru_node.free();

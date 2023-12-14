@@ -39,7 +39,7 @@ unsafe impl Allocator for Pal {
     fn allocate(&self, layout: std::alloc::Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut ptr: PalPtr<u8> = self.allocate(layout.size()).map_err(|_| AllocError)?;
         Ok(
-            NonNull::new(unsafe { core::slice::from_raw_parts_mut(ptr.load_mut(), layout.size()) })
+            NonNull::new(unsafe { core::slice::from_raw_parts_mut(ptr.load_mut_unsafe(), layout.size()) })
                 .ok_or_else(|| AllocError)?,
         )
     }
@@ -71,7 +71,7 @@ pub enum PalError {
 // A friendly persistent pointer. Useless without the according handle to the
 // original arena.
 pub struct PalPtr<T> {
-    inner: PMEMoid,
+    pub inner: PMEMoid,
     size: usize,
     _phantom: PhantomData<T>,
 }
@@ -121,12 +121,12 @@ impl PartialEq for PMEMoid {
 
 impl Eq for PMEMoid {}
 
-pub struct Fuck<'a, T> {
+pub struct PalPtrMutHandle<'a, T> {
     oid: &'a mut PalPtr<T>,
     val: &'a mut T,
 }
 
-impl<'a, T> Deref for Fuck<'a, T> {
+impl<'a, T> Deref for PalPtrMutHandle<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -134,13 +134,13 @@ impl<'a, T> Deref for Fuck<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for Fuck<'a, T> {
+impl<'a, T> DerefMut for PalPtrMutHandle<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.val
     }
 }
 
-impl<'a, T> Drop for Fuck<'a, T> {
+impl<'a, T> Drop for PalPtrMutHandle<'a, T> {
     fn drop(&mut self) {
         self.oid.persist()
     }
@@ -152,19 +152,28 @@ impl<T> PalPtr<T> {
         unsafe { (haura_direct(self.inner) as *const T).as_ref().unwrap() }
     }
 
-    pub fn load_mut(&mut self) -> &mut T {
+    unsafe fn load_mut_unsafe(&mut self) -> &mut T {
         unsafe { (haura_direct(self.inner) as *mut T).as_mut().unwrap() }
     }
 
-    pub fn load_mut_safe(&mut self) -> Fuck<T> {
-        Fuck {
+    pub fn load_mut(&mut self) -> PalPtrMutHandle<T> {
+        PalPtrMutHandle {
             val: unsafe { (haura_direct(self.inner) as *mut T).as_mut().unwrap() },
             oid: self,
         }
     }
 
     pub fn init(&mut self, src: *const T, count: usize) {
-        unsafe { (haura_direct(self.inner) as *mut T).copy_from(src, count) }
+        unsafe {
+            pmemobj_memcpy(
+                pmemobj_pool_by_oid(self.inner),
+                haura_direct(self.inner),
+                src as *const c_void,
+                self.size.min(count),
+                PMEMOBJ_F_MEM_NONTEMPORAL,
+            );
+        };
+        // unsafe { (haura_direct(self.inner) as *mut T).copy_from(src, count) }
     }
 
     /// Copy a range of bytes behind this pointer to a given buffer. Data is
@@ -203,7 +212,7 @@ impl<T> PalPtr<T> {
     }
 
     pub fn persist(&self) {
-        println!("Persisting {:?}", self.inner);
+        // println!("Persisting {:?}", self.inner);
         unsafe {
             pmemobj_persist(
                 pmemobj_pool_by_oid(self.inner),
@@ -266,8 +275,8 @@ impl Pal {
 
     pub fn allocate_variable<T>(&self, v: T) -> Result<PalPtr<T>, PalError> {
         let mut ptr = self.allocate(std::mem::size_of_val(&v))?;
-        assert!(unsafe { dbg!(pmemobj_alloc_usable_size(ptr.inner)) >= std::mem::size_of_val(&v) });
-        ptr.init(&v, dbg!(std::mem::size_of_val(&v)));
+        assert!(unsafe { pmemobj_alloc_usable_size(ptr.inner) >= std::mem::size_of_val(&v) });
+        ptr.init(&v, std::mem::size_of_val(&v));
         Ok(ptr)
     }
 
@@ -297,10 +306,8 @@ impl Pal {
         }
         let oid = unsafe { oid.assume_init() };
         let true_size = unsafe { pmemobj_alloc_usable_size(oid)};
-        dbg!(true_size);
         self.allocations
             .fetch_add(true_size as u64, std::sync::atomic::Ordering::Relaxed);
-        dbg!(self.allocations.load(std::sync::atomic::Ordering::Relaxed));
         Ok(PalPtr {
             inner: oid,
             size,

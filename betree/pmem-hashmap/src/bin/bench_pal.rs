@@ -35,12 +35,14 @@ fn bench_pal_sub(rank: usize, barrier: Arc<std::sync::Barrier>, tx: std::sync::m
                         match cmd {
                             CMD::Write(ptrs) => {
                                 for ptr in ptrs.iter() {
+                                    buf[0] = (ptr.inner.off % 256) as u8;
                                     ptr.copy_from(&buf, &bar);
                                 }
                             }
                             CMD::Read(ptrs) => {
                                 for ptr in ptrs.iter() {
                                     ptr.copy_to(&mut buf, &bar);
+                                    assert!(buf[0] == (ptr.inner.off % 256) as u8);
                                 }
                             }
                             CMD::Wait => {
@@ -99,11 +101,11 @@ fn bench_pal_sub(rank: usize, barrier: Arc<std::sync::Barrier>, tx: std::sync::m
 }
 
 const JOBS: usize = 1;
-const BS: usize = 4 * 1024 * 1024;
-const SIZE: usize = 64 * 1024 * 1024 * 1024;
-const EFFECTIVE_SIZE: usize = 32 * 1024 * 1024 * 1024;
+const BS: usize = 4 * 1024;
+const SIZE: usize = 32 * 1024 * 1024 * 1024;
+const EFFECTIVE_SIZE: usize = 30 * 1024 * 1024 * 1024;
 const ITER: usize = EFFECTIVE_SIZE / BS;
-const WORKERS: usize = 2;
+const WORKERS: usize = 1;
 
 fn main() {
     let (tx, rx) = std::sync::mpsc::channel();

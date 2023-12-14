@@ -24,7 +24,7 @@ impl<K: std::fmt::Debug + Ord + Clone, V: std::fmt::Debug> std::fmt::Debug for N
                     .children
                     .iter()
                     .filter_map(|e| match e {
-                        Link::Entry(val) => None,
+                        Link::Entry(_, val) => None,
                         Link::Child(n) => Some(n.load()),
                     })
                     .collect::<Vec<&Node<K, V>>>(),
@@ -34,14 +34,14 @@ impl<K: std::fmt::Debug + Ord + Clone, V: std::fmt::Debug> std::fmt::Debug for N
 }
 
 pub enum Link<K, V> {
-    Entry(V),
+    Entry(K, V),
     Child(PalPtr<Node<K, V>>),
 }
 
 impl<K, V> Link<K, V> {
     fn assert_child(&mut self) -> &mut PalPtr<Node<K, V>> {
         match self {
-            Link::Entry(_) => panic!("Link was not a child."),
+            Link::Entry(_, _) => panic!("Link was not a child."),
             Link::Child(c) => c,
         }
     }
@@ -52,7 +52,7 @@ pub struct PBTree<K, V> {
     root: PalPtr<Node<K, V>>,
 }
 
-impl<K: Ord + Clone, V> PBTree<K, V> {
+impl<K: Ord + Clone + std::fmt::Debug, V> PBTree<K, V> {
     pub fn new(pal: &Pal) -> Result<Self, PalError> {
         let mut root = pal.allocate(std::mem::size_of::<Node<K, V>>())?;
         root.init(&Node::new(), std::mem::size_of::<Node<K, V>>());
@@ -71,10 +71,19 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
             match node.load().walk(key) {
                 NodeWalk::Miss => return None,
                 NodeWalk::Found(idx) => return node.load().get(idx),
-                NodeWalk::Child(idx) => match node.load().children.get(idx).unwrap() {
-                    Link::Entry(_) => unreachable!(),
+                NodeWalk::Child(idx) => {
+                    // println!("######################################################################################");
+                    // dbg!(&node.load().pivots);
+                    // for n in node.load().children.iter() {
+                    //     match n {
+                    //         Link::Entry(_) => unreachable!(),
+                    //         Link::Child(ref n) => { dbg!(&n.load().pivots); },
+                    //     }
+                    // }
+                    match node.load().children.get(idx).unwrap() {
+                    Link::Entry(_, _) => unreachable!(),
                     Link::Child(ref n) => node = n,
-                },
+                }},
             }
         }
     }
@@ -97,14 +106,14 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
     //                 //  - All other leafs are of size MIN, merge children.
     //                 // - Parents contain key as index: Delete and replace with highest element from left child
 
-    //                 if node.load_mut_safe().remove(key) {
+    //                 if node.load_mut().remove(key) {
     //                     // Treat small leaf
     //                     // 1. Check if left or right child has enough elements
     //                     if path.is_empty() {
     //                         // emptied root node
     //                         return;
     //                     }
-    //                     let mut parent = path.last_mut().unwrap().load_mut_safe();
+    //                     let mut parent = path.last_mut().unwrap().load_mut();
     //                     let idx = match parent.walk(key) {
     //                         NodeWalk::Child(idx) => idx,
     //                         _ => unreachable!(),
@@ -164,13 +173,13 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
     //                 } else {
     //                     // Remove from parents if they contain the key
     //                     for mut n in path.into_iter() {
-    //                         assert!(!n.load_mut_safe().remove(key))
+    //                         assert!(!n.load_mut().remove(key))
     //                     }
     //                 }
     //                 break;
     //             }
     //             NodeWalk::Child(idx) => {
-    //                 match node.clone().load_mut_safe().children.get_mut(idx).unwrap() {
+    //                 match node.clone().load_mut().children.get_mut(idx).unwrap() {
     //                     Link::Entry(_) => unreachable!(),
     //                     Link::Child(ref mut n) => node = n,
     //                 }
@@ -201,7 +210,7 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
             match node.load().walk(&key) {
                 NodeWalk::Miss => {
                     return if let Some((median, new_node, value)) =
-                        node.load_mut_safe().insert(key.clone(), val)
+                        node.load_mut().insert(key.clone(), val)
                     {
                         // Insert facilitated a split, insert new node into parent
                         let mut pair = Some((median, new_node)).map(|(key, new_node)| {
@@ -209,19 +218,17 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
                             (key, pal.allocate_variable(new_node).unwrap())
                         });
                         for mut cur_node in path.iter_mut().rev().skip(1) {
-                            dbg!(&cur_node);
+                            // dbg!(&cur_node);
                             if let Some((key, new_node)) = pair {
-                                dbg!(cur_node.load().children.size());
-                                let foo = pal.allocate::<i32>(64);
-                                foo.unwrap().free();
                                 // dbg!(cur_node.load().children.size());
-                                let mut foo = cur_node.load_mut_safe();
-                                pair = foo.escalate(key, new_node).map(|(key, new_node)| {
+                                let mut foo = cur_node.load_mut();
+                                    pair = foo.escalate(key, new_node).map(|(key, new_node)| {
                                     // Allocate the new node
                                     (key, pal.allocate_variable(new_node).unwrap())
                                 });
+                                debug_assert!(foo.is_valid());
                                 assert!(foo.children.size() < 1000);
-                                dbg!(foo.children.size());
+                                // dbg!(foo.children.size());
                             } else {
                                 break;
                             }
@@ -237,7 +244,7 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
                             new_root.children.push_front(Link::Child(self.root));
                             new_root.children.push_back(Link::Child(new_node));
                             self.root = pal.allocate_variable(new_root).unwrap();
-                            dbg!(self.root);
+                            // dbg!(self.root);
                         }
                         Some((key, value))
                     } else {
@@ -245,18 +252,18 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
                     };
                 }
                 NodeWalk::Found(idx) => {
-                    node.load_mut_safe()
+                    node.load_mut()
                         .children
                         .get_mut(idx)
                         .map(|entry| match entry {
-                            Link::Entry(ref mut v) => *v = val,
+                            Link::Entry(_, ref mut v) => *v = val,
                             Link::Child(_) => unreachable!(),
                         });
                     return None;
                 }
                 NodeWalk::Child(idx) => {
-                    match node.clone().load_mut_safe().children.get_mut(idx).unwrap() {
-                        Link::Entry(_) => unreachable!(),
+                    match node.clone().load_mut().children.get_mut(idx).unwrap() {
+                        Link::Entry(_, _) => unreachable!(),
                         Link::Child(ref mut n) => node = n.clone(),
                     }
                 }
@@ -265,13 +272,14 @@ impl<K: Ord + Clone, V> PBTree<K, V> {
     }
 }
 
+#[derive(Debug)]
 enum NodeWalk {
     Miss,
     Found(usize),
     Child(usize),
 }
 
-impl<K: Ord + Clone, V> Node<K, V> {
+impl<K: Ord + Clone + std::fmt::Debug, V> Node<K, V> {
     pub fn new() -> Self {
         Node {
             pivots: ShiftArray::new(),
@@ -291,7 +299,7 @@ impl<K: Ord + Clone, V> Node<K, V> {
             if self.pivots.get(idx).unwrap() == key {
                 // Inspect Child
                 return match self.children.get(idx).as_ref().unwrap() {
-                    Link::Entry(_) => NodeWalk::Found(idx),
+                    Link::Entry(_, _) => NodeWalk::Found(idx),
                     Link::Child(_) => NodeWalk::Child(idx),
                 };
             }
@@ -303,7 +311,7 @@ impl<K: Ord + Clone, V> Node<K, V> {
 
         match self.children.get(pos) {
             Some(ref ptr) => match ptr {
-                Link::Entry(_) => NodeWalk::Miss,
+                Link::Entry(_, _) => NodeWalk::Miss,
                 Link::Child(ref child) => NodeWalk::Child(idx),
             },
             None => NodeWalk::Miss,
@@ -317,6 +325,7 @@ impl<K: Ord + Clone, V> Node<K, V> {
         } else {
             // Split the node and escalate
             let (new_key, mut right) = self.split();
+            debug_assert!(self.is_valid());
             // assert!(right.insert(key, value).is_none());
             Some((new_key, right, value))
         }
@@ -326,14 +335,14 @@ impl<K: Ord + Clone, V> Node<K, V> {
         assert!(self.pivots.size() == NUM_KEYS);
         assert!(self.children.size() >= NUM_KEYS);
         const idx: usize = NUM_KEYS / 2 + NUM_KEYS % 2 - 1;
-        dbg!(idx);
+        // dbg!(idx);
 
         let right_pivots = self.pivots.split_after(idx);
         let right_children = self.children.split_after(idx);
-        dbg!(self.pivots.size());
-        dbg!(self.children.size());
-        dbg!(right_pivots.size());
-        dbg!(right_children.size());
+        // dbg!(self.pivots.size());
+        // dbg!(self.children.size());
+        // dbg!(right_pivots.size());
+        // dbg!(right_children.size());
 
         let right = Self {
             pivots: right_pivots,
@@ -344,31 +353,102 @@ impl<K: Ord + Clone, V> Node<K, V> {
         (self.pivot_high(), right)
     }
 
+    pub fn is_valid(&self) -> bool {
+        dbg!(&self.pivots);
+        for (idx, pivot) in self.pivots.iter().enumerate() {
+            // Left child must exist
+            dbg!(self.children.iter().map(|c| match c {Link::Child(c) => c.load().pivot_low(), Link::Entry(_, _) => pivot.clone()}).collect::<Vec<_>>());
+            let left_valid = match self.children.get(dbg!(idx)).unwrap() {
+                Link::Entry(_,_) => true,
+                Link::Child(c) => { dbg!(&c.load().pivots); dbg!(c.load().pivot_low() < *pivot) && dbg!(dbg!(c.load().pivot_high()) == *dbg!(pivot)) && dbg!(c.load().is_valid())},
+            };
+            // May not exist
+            // let right_valid = self.children.get(idx + 1).map(|l| match l {
+            //     Link::Entry(_) => true,
+            //     Link::Child(c) => c.load().pivot_low() > *pivot && c.load().pivot_high() > *pivot && c.load().is_valid(),
+            // }).unwrap_or(true);
+            let right_valid = true;
+            if !dbg!(left_valid) || !dbg!(right_valid) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Add the node to self or split this node also and insert it to the right hand side?
     pub fn escalate(&mut self, key: K, right: PalPtr<Node<K, V>>) -> Option<(K, Node<K, V>)> {
         if self.pivots.size() <= NUM_KEYS && self.children.size() < B {
             println!("can buffer node");
-            // Shift pivot and child
+
+            // If full either append only or insert and shift
             let mut idx = self.pivots.find(&key).unwrap();
+            // let mut idx_test = self.pivots.find(&right.load().pivot_low()).unwrap();
+            // assert_eq!(idx, idx_test);
             if self.pivots.size() == NUM_KEYS {
-                let _ = self.pivots.pop_back();
+                if idx == self.pivots.size() {
+                    self.children.push_back(Link::Child(right));
+                    debug_assert!(self.is_valid());
+                    return None
+                }
+                self.pivots.pop_back();
+                self.pivots.insert(idx, key);
+                self.children.insert(idx + 1, Link::Child(right));
+                debug_assert!(self.is_valid());
+                return None
             }
-            // Children space is available, shift
+
             self.pivots.insert(idx, key);
             self.children.insert(idx + 1, Link::Child(right));
-            dbg!(self.children.size());
+            debug_assert!(self.is_valid());
+
+            // // Shift pivot and child
+            // if self.pivots.size() == NUM_KEYS {
+            //     let _ = self.pivots.pop_back();
+            // }
+            // let mut idx = self.pivots.find(&key).unwrap();
+            // // Children space is available, shift
+            // let child_idx = if self.pivot_high() < key {
+            //     idx + 1
+            // } else { idx };
+            // self.pivots.insert(idx, key.clone());
+            // dbg!(child_idx);
+            // dbg!(right.load().pivot_low());
+            // self.children.insert(child_idx, Link::Child(right));
+            // dbg!(&self.pivots);
+            // dbg!((0..self.pivots.size()).map(|idx| match self.children.get(idx).unwrap() { Link::Child(c) => c.load().pivot_low(), Link::Entry(e) => k.clone()}).collect::<Vec<_>>());
+            // debug_assert!(self.is_valid());
+            // dbg!(self.children.size());
             None
         } else {
             let (upper, mut new_right) = self.split();
-            dbg!(self.children.size());
-            assert!(new_right.escalate(key, right).is_none());
-            dbg!(self.children.size());
+
+            if self.pivots.size() == self.children.size() - 1 {
+                // Pull the last childs max key into the node to create a consistent state
+                let last_child = self.children.last().unwrap();
+                self.pivots.push_back(match last_child {
+                    Link::Entry(k, e) => k.clone(),
+                    Link::Child(c) => c.load().pivot_high(),
+                })
+            }
+
+            // Check which side should contain the splitted node.  We don't know
+            // the position from wich the node was splitted. If it was the left
+            // most for example it would need to be inserted into the left old
+            // node.
+            if new_right.pivot_low() < key {
+                assert!(new_right.escalate(key, right).is_none());
+            } else {
+                // Otherwise insert into self.
+                assert!(self.escalate(key, right).is_none());
+            }
+            // dbg!(self.children.size());
             Some((upper, new_right))
         }
     }
 
     pub fn get(&self, idx: usize) -> Option<&V> {
         match self.children.get(idx).as_ref().unwrap() {
-            Link::Entry(ref v) => Some(v),
+            Link::Entry(_, ref v) => Some(v),
             Link::Child(_) => None,
         }
     }
@@ -392,7 +472,7 @@ impl<K: Ord + Clone, V> Node<K, V> {
         let idx = self.pivots.find(key).unwrap();
         let remove_pivot;
         match self.children.get_mut(idx).unwrap() {
-            Link::Entry(_) => {
+            Link::Entry(_, _) => {
                 self.pivots.remove(idx);
                 remove_pivot = true;
             }
@@ -410,16 +490,16 @@ impl<K: Ord + Clone, V> Node<K, V> {
     pub fn splice(&mut self, mut key: K, mut val: V) {
         assert!(self.pivots.size() < NUM_KEYS);
         let idx = self.pivots.find(&key).unwrap_or(0);
-        self.pivots.insert(idx, key);
+        self.pivots.insert(idx, key.clone());
         // This may not work
-        self.children.insert(idx, Link::Entry(val));
+        self.children.insert(idx, Link::Entry(key, val));
     }
 
     pub fn count(&self) -> usize {
         self.children
             .iter()
             .map(|e| match e {
-                Link::Entry(e) => 1,
+                Link::Entry(_, e) => 1,
                 Link::Child(c) => c.load().count(),
             })
             .sum()
@@ -517,19 +597,20 @@ mod tests {
 
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        let vals = [0u8; 256].map(|_| rng.gen::<u16>());
+        let vals = [0u8; 512].map(|_| rng.gen::<u16>());
         let set = HashSet::from(vals);
 
         let mut inserted = vec![];
         for id in set.iter() {
+            println!("ID: {id}");
             dbg!(tree.root.load().count());
             tree.insert(id, id, &pal);
             dbg!(tree.root.load().count());
+            assert!(tree.root.load().is_valid());
             inserted.push(id);
             for x in inserted.iter() {
-                if tree.get(x) != Some(x) {
-                    assert_eq!(x, &&0);
-                }
+                println!("Key: {x}");
+                assert_eq!(tree.get(x), Some(x));
             }
         }
 

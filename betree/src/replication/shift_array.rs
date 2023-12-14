@@ -1,7 +1,7 @@
 #[derive(Debug)]
 pub struct ShiftArray<T, const A: usize> {
     count: usize,
-    arr: [Option<T>; A],
+    pub arr: [Option<T>; A],
 }
 
 impl<T: PartialOrd, const A: usize> ShiftArray<T, A> {
