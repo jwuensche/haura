@@ -18,14 +18,14 @@ use crate::{
     storage_pool::{DiskOffset, StoragePoolLayer, NUM_STORAGE_CLASSES},
     tree::{Node, PivotKey},
     vdev::{Block, BLOCK_SIZE},
-    StoragePreference,
+    StoragePreference, migration::{PlacementPolicy, PlacementPolicyAnatomy},
 };
 use crossbeam_channel::Sender;
 use futures::{executor::block_on, future::ok, prelude::*};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::{
     collections::HashMap,
-    mem::replace,
+    mem::{replace, MaybeUninit},
     ops::DerefMut,
     pin::Pin,
     sync::{
@@ -60,6 +60,10 @@ where
     next_modified_node_id: AtomicU64,
     next_disk_id: AtomicU64,
     report_tx: Option<Sender<DmlMsg>>,
+    // @jwuensche: I cannot be bothered with dragging yet another type parameter
+    // through half of the code base. Use dynamics for this, this can be
+    // debated.
+    policy: Arc<PlacementPolicyAnatomy>,
 }
 
 impl<E, SPL> Dmu<E, SPL>
@@ -75,6 +79,7 @@ where
         pool: SPL,
         alloc_strategy: [[Option<u8>; NUM_STORAGE_CLASSES]; NUM_STORAGE_CLASSES],
         cache: E,
+        policy: Arc<PlacementPolicyAnatomy>,
         handler: Handler<ObjRef<ObjectPointer<SPL::Checksum>>>,
     ) -> Self {
         let allocation_data = (0..pool.storage_class_count())
@@ -103,6 +108,7 @@ where
             next_modified_node_id: AtomicU64::new(1),
             next_disk_id: AtomicU64::new(0),
             report_tx: None,
+            policy,
         }
     }
 
@@ -371,11 +377,10 @@ where
         debug!("Estimated object size is {object_size} bytes");
         debug!("Using compression {:?}", &self.default_compression);
         let generation = self.handler.current_generation();
-        // Use storage hints if available
-        if let Some(pref) = self.storage_hints.lock().remove(&pivot_key) {
-            object.set_system_storage_preference(pref);
-        }
-        let storage_preference = object.correct_preference();
+
+        // TODO: Interact with the policy and gather placement recommendation
+        // for the hot path Modified -> Stored
+        let storage_preference = self.policy.recommend_write_back(&pivot_key).or(object.correct_preference());
         let storage_class = storage_preference
             .preferred_class()
             .unwrap_or(self.default_storage_class);
@@ -398,12 +403,6 @@ where
         assert!(size.to_bytes() as usize >= compressed_data.len());
         let offset = self.allocate(storage_class, size)?;
         assert_eq!(size.to_bytes() as usize, compressed_data.len());
-        /*if size.to_bytes() as usize != compressed_data.len() {
-            let mut v = compressed_data.into_vec();
-            v.resize(size.to_bytes() as usize, 0);
-            compressed_data = v.into_boxed_slice();
-        }*/
-
         let info = self.modified_info.lock().remove(&mid).unwrap();
 
         let checksum = {
@@ -972,6 +971,10 @@ where
         for key in keys {
             let _ = cache.remove(&key, |obj| obj.size());
         }
+    }
+
+    fn placement_policy(&self) -> &Arc<PlacementPolicyAnatomy> {
+        &self.policy
     }
 }
 

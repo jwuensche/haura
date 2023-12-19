@@ -15,6 +15,7 @@ use std::{
 };
 
 use libc::{c_void, memcpy};
+use parking_lot::RwLock;
 
 use crate::{
     cow_bytes::{CowBytes, SlicedCowBytes},
@@ -199,6 +200,14 @@ impl<T: HandleResult> HandleResultExt for Result<T, Error> {
                 T::fail()
             }
         }
+    }
+}
+
+impl<T: HandleResult> HandleResultExt for Result<Arc<RwLock<T>>, Error> {
+    type Result = T::Result;
+
+    fn handle_result(self, err: *mut *mut err_t) -> Self::Result {
+        todo!()
     }
 }
 

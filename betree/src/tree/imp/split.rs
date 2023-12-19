@@ -48,9 +48,15 @@ where
         parent: &mut TakeChildBuffer<ChildBuffer<R>>,
     ) -> Result<(X::CacheValueRefMut, isize), Error> {
         self.dml.verify_cache();
-
         let before = node.size();
-        let (sibling, pivot_key, size_delta, lpk) = node.split();
+
+        // TODO: query a new system storage preference. A combination of factors
+        // may have lead to the previous classification and a safer bet is to
+        // just assume a clean slate.
+        let (mut sibling, pivot_key, size_delta, lpk) = node.split();
+        let new_pref = self.dml.placement_policy().query_new();
+        sibling.set_system_storage_preference(new_pref);
+        // sibling.set_system_storage_preference(pref)
         let pk = lpk.to_global(self.tree_id());
         let select_right = sibling.size() > node.size();
         debug!(

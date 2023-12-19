@@ -1,7 +1,7 @@
 use crate::{database::DatasetId, tree::PivotKey};
 
 use super::{Dml, Error};
-use std::ops::{Deref, DerefMut};
+use std::{ops::{Deref, DerefMut}, sync::Arc};
 
 impl<T> Dml for T
 where
@@ -97,5 +97,9 @@ where
 
     fn drop_cache(&self) {
         (**self).drop_cache();
+    }
+
+    fn placement_policy(&self) -> &Arc<crate::migration::PlacementPolicyAnatomy> {
+        (**self).placement_policy()
     }
 }

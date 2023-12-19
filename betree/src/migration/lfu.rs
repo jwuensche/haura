@@ -37,9 +37,6 @@ pub struct Lfu {
     object_stores: HashMap<ObjectStoreId, Option<ObjectStore>>,
     objects: [LfuCache<GlobalObjectId, (CowBytes, Block<u64>)>; NUM_STORAGE_CLASSES],
     default_storage_class: StoragePreference,
-    /// HashMap accessible by the DML, resolution is not guaranteed but always
-    /// used when a object is written.
-    storage_hint_dml: Arc<Mutex<HashMap<PivotKey, StoragePreference>>>,
 }
 
 /// Least frequently used (LFU) specific configuration details.
@@ -200,7 +197,6 @@ impl<'lfu> Lfu {
         db_rx: Receiver<DatabaseMsg>,
         db: Arc<RwLock<Database>>,
         config: MigrationConfig<LfuConfig>,
-        storage_hint_dml: Arc<Mutex<HashMap<PivotKey, StoragePreference>>>,
     ) -> Self {
         let dmu = Arc::clone(db.read().root_tree.dmu());
         let default_storage_class = dmu.default_storage_class();
@@ -211,7 +207,6 @@ impl<'lfu> Lfu {
             dmu,
             db,
             config,
-            storage_hint_dml,
             object_stores: Default::default(),
             objects: [(); NUM_STORAGE_CLASSES].map(|_| LfuCache::unbounded()),
             default_storage_class,
@@ -308,7 +303,7 @@ impl super::MigrationPolicy for Lfu {
                         };
                         if up_freq < freq || !tight_space {
                             // MOVE DATA UPWARDS
-                            self.storage_hint_dml.lock().insert(key.clone(), target);
+                            // self.storage_hint_dml.lock().insert(key.clone(), target);
                             moved += lower_size.as_u64();
 
                             // In case enough data has been moved; rate limited.

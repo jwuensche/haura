@@ -9,7 +9,7 @@ use crate::{
         self, Dml, DmlWithHandler, DmlWithReport, DmlWithStorageHints, Dmu, TaggedCacheValue,
     },
     metrics::{metrics_init, MetricsConfiguration},
-    migration::{DatabaseMsg, DmlMsg, GlobalObjectId, MigrationPolicies},
+    migration::{DatabaseMsg, DmlMsg, GlobalObjectId, PlacementPolicies, PlacementPolicy, PlacementPolicyAnatomy},
     size::StaticSize,
     storage_pool::{
         DiskOffset, StoragePoolConfiguration, StoragePoolLayer, StoragePoolUnit,
@@ -141,7 +141,7 @@ pub struct DatabaseConfiguration {
     pub sync_interval_ms: Option<u64>,
 
     /// Set the migration policy to be used.
-    pub migration_policy: Option<MigrationPolicies>,
+    pub migration_policy: PlacementPolicies,
 
     /// If and how to log database metrics
     pub metrics: Option<MetricsConfiguration>,
@@ -159,7 +159,7 @@ impl Default for DatabaseConfiguration {
             access_mode: AccessMode::OpenIfExists,
             sync_interval_ms: Some(DEFAULT_SYNC_INTERVAL_MS),
             metrics: None,
-            migration_policy: None,
+            migration_policy: PlacementPolicies::Noop,
         }
     }
 }
@@ -211,7 +211,7 @@ impl DatabaseConfiguration {
         }
     }
 
-    pub fn new_dmu(&self, spu: RootSpu, handler: DbHandler) -> RootDmu {
+    pub fn new_dmu(&self, spu: RootSpu, handler: DbHandler, policy: Arc<PlacementPolicyAnatomy>) -> RootDmu {
         let mut strategy: [[Option<u8>; NUM_STORAGE_CLASSES]; NUM_STORAGE_CLASSES] =
             [[None; NUM_STORAGE_CLASSES]; NUM_STORAGE_CLASSES];
 
@@ -233,6 +233,8 @@ impl DatabaseConfiguration {
             spu,
             strategy,
             ClockCache::new(self.cache_size),
+            // policy
+            policy,
             handler,
         )
     }
@@ -359,7 +361,7 @@ impl DatabaseConfiguration {
         }
     }
 
-    fn migration_policy(&self) -> Option<MigrationPolicies> {
+    fn migration_policy(&self) -> PlacementPolicies {
         self.migration_policy.clone()
     }
 }
@@ -376,7 +378,7 @@ pub struct Database {
 
 impl Database {
     /// Opens a database given by the storage pool configuration.
-    pub fn open(cfg: StoragePoolConfiguration) -> Result<Self> {
+    pub fn open(cfg: StoragePoolConfiguration) -> Result<Arc<RwLock<Self>>> {
         Self::build(DatabaseConfiguration {
             storage: cfg,
             access_mode: AccessMode::OpenIfExists,
@@ -387,7 +389,7 @@ impl Database {
     /// Creates a database given by the storage pool configuration.
     ///
     /// Note that any existing database will be overwritten!
-    pub fn create(cfg: StoragePoolConfiguration) -> Result<Self> {
+    pub fn create(cfg: StoragePoolConfiguration) -> Result<Arc<RwLock<Self>>> {
         Self::build(DatabaseConfiguration {
             storage: cfg,
             access_mode: AccessMode::AlwaysCreateNew,
@@ -396,7 +398,7 @@ impl Database {
     }
 
     /// Opens or creates a database given by the storage pool configuration.
-    pub fn open_or_create(cfg: StoragePoolConfiguration) -> Result<Self> {
+    pub fn open_or_create(cfg: StoragePoolConfiguration) -> Result<Arc<RwLock<Self>>> {
         Self::build(DatabaseConfiguration {
             storage: cfg,
             access_mode: AccessMode::OpenOrCreate,
@@ -411,23 +413,18 @@ impl Database {
 
     /// Opens or creates a database given by the storage pool configuration and
     /// sets the given cache size.
-    pub fn build(builder: DatabaseConfiguration) -> Result<Self> {
-        Self::build_internal(builder, None, None)
-    }
+    pub fn build(builder: DatabaseConfiguration) -> Result<Arc<RwLock<Database>>> {
+        let (dml_tx, dml_rx) = crossbeam_channel::unbounded();
+        let (db_tx, db_rx) = crossbeam_channel::unbounded();
 
-    // Construct an instance of [Database] either using external threads or not.
-    // Deprecates [with_sync]
-    fn build_internal(
-        builder: DatabaseConfiguration,
-        dml_tx: Option<Sender<DmlMsg>>,
-        db_tx: Option<Sender<DatabaseMsg>>,
-    ) -> Result<Self> {
         let spl = builder.new_spu()?;
         let handler = builder.new_handler(&spl);
-        let mut dmu = builder.new_dmu(spl, handler);
-        if let Some(tx) = &dml_tx {
-            dmu.set_report(tx.clone());
+        let policy = builder.migration_policy.construct();
+        let mut dmu = builder.new_dmu(spl, handler, Arc::clone(&policy));
+        if policy.needs_channel() {
+            dmu.set_report(dml_tx);
         }
+
 
         let (tree, root_ptr) = builder.select_root_tree(Arc::new(dmu))?;
 
@@ -437,63 +434,57 @@ impl Database {
             DefaultMessageAction,
         ));
 
-        Ok(Database {
+        let db = Arc::new(RwLock::new(Database {
             root_tree: tree,
             builder,
             open_datasets: Default::default(),
-            db_tx,
-        })
+            db_tx: if policy.needs_channel() { Some(db_tx) } else { None },
+        }));
+
+        policy.finish_init(dml_rx, db_rx, Arc::clone(&db));
+
+        crate::migration::spawn_policy(policy);
+
+        Ok(db)
     }
 
-    /// Opens or create a database given by the storage pool configuration, sets the given cache size and spawns threads to periodically perform
-    /// sync (if configured with [SyncMode::Periodic]) and auto migration (if configured with [MigrationPolicies]).
-    pub fn build_threaded(builder: DatabaseConfiguration) -> Result<Arc<RwLock<Self>>> {
-        let db = match builder.migration_policy() {
-            Some(pol) => {
-                let (dml_tx, dml_rx) = crossbeam_channel::unbounded();
-                let (db_tx, db_rx) = crossbeam_channel::unbounded();
-                let db = Arc::new(RwLock::new(Self::build_internal(
-                    builder,
-                    Some(dml_tx),
-                    Some(db_tx.clone()),
-                )?));
+    // /// Opens or create a database given by the storage pool configuration, sets the given cache size and spawns threads to periodically perform
+    // /// sync (if configured with [SyncMode::Periodic]) and auto migration (if configured with [PlacementPolicies]).
+    // pub fn build_threaded(builder: DatabaseConfiguration) -> Result<Arc<RwLock<Self>>> {
+    //     let db = match builder.migration_policy() {
+    //         Some(pol) => {
 
-                // Discovery Initializiation
-                for os_id in db.read().iter_object_stores()? {
-                    // NOTE: If any of the result resolutions here fail the
-                    // state of the datastore is anyway corrupt and we can
-                    // escalate.
-                    let id = os_id?;
-                    let os = db.write().open_object_store_with_id(id)?;
-                    for (key, info) in os.iter_objects()? {
-                        db_tx
-                            .send(DatabaseMsg::ObjectDiscover(
-                                GlobalObjectId::build(id, info.object_id),
-                                info,
-                                key,
-                            ))
-                            .expect("UNREACHABLE");
-                    }
-                    db.write().close_object_store(os);
-                }
+    //             let db = Arc::new(RwLock::new(Self::build_internal(
+    //                 builder,
+    //                 Some(dml_tx),
+    //                 Some(db_tx.clone()),
+    //             )?));
 
-                let other = db.clone();
-                thread::spawn(move || {
-                    let hints = other.read().root_tree.dmu().storage_hints();
-                    let mut policy = pol.construct(dml_rx, db_rx, other, hints);
-                    loop {
-                        if let Err(e) = policy.thread_loop() {
-                            error!("Automatic Migration Policy encountered {:?}", e);
-                            error!("Continuing and reinitializing policy to avoid errors, but functionality may be limited.");
-                        }
-                    }
-                });
-                db
-            }
-            None => Arc::new(RwLock::new(Self::build_internal(builder, None, None)?)),
-        };
-        Ok(Self::with_sync(db))
-    }
+    //             // Discovery Initializiation
+    //             for os_id in db.read().iter_object_stores()? {
+    //                 // NOTE: If any of the result resolutions here fail the
+    //                 // state of the datastore is anyway corrupt and we can
+    //                 // escalate.
+    //                 let id = os_id?;
+    //                 let os = db.write().open_object_store_with_id(id)?;
+    //                 for (key, info) in os.iter_objects()? {
+    //                     db_tx
+    //                         .send(DatabaseMsg::ObjectDiscover(
+    //                             GlobalObjectId::build(id, info.object_id),
+    //                             info,
+    //                             key,
+    //                         ))
+    //                         .expect("UNREACHABLE");
+    //                 }
+    //                 db.write().close_object_store(os);
+    //             }
+
+    //             db
+    //         }
+    //         None => Arc::new(RwLock::new(Self::build_internal(builder, None, None)?)),
+    //     };
+    //     Ok(Self::with_sync(db))
+    // }
 
     /// If this [Database] was created with a [SyncMode::Periodic], this function
     /// will wrap self in an `Arc<RwLock<_>>` and start a thread to periodically

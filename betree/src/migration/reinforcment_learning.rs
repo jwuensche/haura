@@ -1142,7 +1142,7 @@ impl MigrationPolicy for ZhangHellanderToor {
         unimplemented!()
     }
 
-    fn thread_loop(&mut self) -> super::errors::Result<()> {
+    fn migrate(&mut self) -> super::errors::Result<()> {
         std::thread::sleep(self.config.grace_period);
         loop {
             std::thread::sleep(self.config.update_period);

@@ -15,7 +15,7 @@
 use crate::{
     cache::AddSize,
     database::DatasetId,
-    migration::DmlMsg,
+    migration::{DmlMsg, PlacementPolicy, PlacementPolicyAnatomy},
     size::{Size, StaticSize},
     storage_pool::{DiskOffset, GlobalDiskId, StoragePoolLayer},
     tree::PivotKey,
@@ -227,6 +227,9 @@ pub trait Dml: Sized {
     fn verify_cache(&self);
     /// Evicts excessive cache entries.
     fn evict(&self) -> Result<(), Error>;
+
+    /// Access the placement policies used by this DMU instance.
+    fn placement_policy(&self) -> &Arc<PlacementPolicyAnatomy>;
 }
 
 /// Legible result of a copy-on-write call. This describes wether the given

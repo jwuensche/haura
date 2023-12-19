@@ -289,8 +289,6 @@ impl LeafNode {
     ) -> (Self, CowBytes, isize, LocalPivotKey) {
         // assert!(self.size() > S::MAX);
         let mut right_sibling = LeafNode {
-            // During a split, preference can't be inherited because the new subset of entries
-            // might be a subset with a lower maximal preference.
             storage_preference: AtomicStoragePreference::known(StoragePreference::NONE),
             system_storage_preference: AtomicSystemStoragePreference::from(StoragePreference::NONE),
             entries_size: 0,

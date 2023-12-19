@@ -69,9 +69,10 @@
 mod errors;
 mod lfu;
 mod msg;
+pub mod placement;
 mod reinforcment_learning;
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use errors::*;
 use itertools::Itertools;
 pub use lfu::{LfuConfig, LfuMode};
@@ -79,18 +80,23 @@ pub(crate) use msg::*;
 use parking_lot::{Mutex, RwLock};
 pub use reinforcment_learning::RlConfig;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicBool, Arc},
+    thread::JoinHandle, mem::MaybeUninit,
+};
 
 use crate::{
-    data_management::DmlWithHandler, database::RootDmu, storage_pool::NUM_STORAGE_CLASSES,
-    tree::PivotKey, vdev::Block, Database, StoragePreference,
+    database::RootDmu, storage_pool::NUM_STORAGE_CLASSES, tree::PivotKey, vdev::Block, Database,
+    StoragePreference,
 };
 
 use self::{lfu::Lfu, reinforcment_learning::ZhangHellanderToor};
 
-/// Available policies for auto migrations.
+/// Available policies for auto data placement.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub enum MigrationPolicies {
+pub enum PlacementPolicies {
+    Noop,
     /// Least frequently used, promote and demote nodes based on their usage in
     /// the current session.  This policy can use either objects, nodes, or a
     /// combination of these. Currently only objects are advised to be used.
@@ -125,22 +131,223 @@ pub enum MigrationPolicies {
     ReinforcementLearning(MigrationConfig<Option<RlConfig>>),
 }
 
-impl MigrationPolicies {
-    pub(crate) fn construct(
-        self,
-        dml_rx: Receiver<DmlMsg>,
-        db_rx: Receiver<DatabaseMsg>,
-        db: Arc<RwLock<Database>>,
-        storage_hint_sink: Arc<Mutex<HashMap<PivotKey, StoragePreference>>>,
-    ) -> Box<dyn MigrationPolicy> {
-        match self {
-            MigrationPolicies::Lfu(config) => {
-                Box::new(Lfu::build(dml_rx, db_rx, db, config, storage_hint_sink))
+/// Conjoined structure of all parts of a data placement policy.
+pub(crate) struct PlacementPolicyAnatomy {
+    config: PlacementPolicies,
+    /// A recommender algorithm (e.g. Lowest Utilization First)
+    predict: PredictionAlgorithm,
+    /// A migration algorithm (e.g. LFU, VengerovRL)
+    mig: Mutex<Box<dyn MigrationPolicy + Send + Sync>>,
+    /// The abstracted view over the entire storage stack.
+    /// TODO: Create a standard view over this?
+    repr: (),
+    terminated: AtomicBool,
+}
+
+/// Predictive Placement Selection algorithms, intended for new nodes after
+/// splitting or merge operations.
+pub enum PredictionAlgorithm {
+    /// Pick the least utilized device.
+    LeastUtilizedFirst,
+    /// Always return [StoragePreference::NONE].
+    Noop,
+}
+
+impl MigrationPolicy for () {
+    fn update(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn metrics(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn promote(&mut self, storage_tier: u8, tight_space: bool) -> Result<Block<u64>> {
+        Ok(Block(0))
+    }
+
+    fn demote(&mut self, storage_tier: u8, desired: Block<u64>) -> Result<Block<u64>> {
+        Ok(Block(0))
+    }
+
+    fn db(&self) -> &Arc<RwLock<Database>> {
+        todo!()
+    }
+
+    fn dmu(&self) -> &Arc<RootDmu> {
+        todo!()
+    }
+
+    fn config(&self) -> MigrationConfig<()> {
+        todo!()
+    }
+}
+
+impl PlacementPolicyAnatomy {
+    pub fn new(config: PlacementPolicies) -> Self {
+        Self {
+            config,
+            predict: PredictionAlgorithm::Noop,
+            mig: Mutex::new(Box::new(())),
+            repr: (),
+            terminated: AtomicBool::new(false),
+        }
+    }
+
+    pub fn finish_init(&self, dml_rx: Receiver<DmlMsg>, db_rx: Receiver<DatabaseMsg>, db: Arc<RwLock<Database>>) {
+        match &self.config {
+            PlacementPolicies::Noop => {},
+            PlacementPolicies::Lfu(config) => {
+                let mut pol = self.mig.lock();
+                *pol = Box::new(Lfu::build(dml_rx, db_rx, db, config.clone()));
             }
-            MigrationPolicies::ReinforcementLearning(config) => {
-                Box::new(ZhangHellanderToor::build(dml_rx, db_rx, db, config))
+            PlacementPolicies::ReinforcementLearning(config) => {
+                let mut pol = self.mig.lock();
+                *pol = Box::new(ZhangHellanderToor::build(dml_rx, db_rx, db, config.clone()));
             }
         }
+    }
+
+    pub fn needs_channel(&self) -> bool {
+        match self.config {
+            PlacementPolicies::Noop => false,
+            _ => true,
+        }
+    }
+
+    pub fn terminate(&self) {
+        self.terminated.store(true, Ordering::Relaxed)
+    }
+
+    pub fn is_terminated(&self) -> bool {
+        self.terminated.load(Ordering::Acquire)
+    }
+
+    pub fn query_new(&self) -> StoragePreference {
+        // FIXME
+        match self.predict {
+            PredictionAlgorithm::LeastUtilizedFirst => todo!(),
+            PredictionAlgorithm::Noop => StoragePreference::NONE,
+        }
+    }
+
+    pub fn new_data(&self) -> StoragePreference {
+        // FIXME
+        self.query_new()
+    }
+
+    pub fn new_meta(&self) -> StoragePreference {
+        // FIXME
+        self.query_new()
+    }
+
+    pub fn recommend_write_back(&self, _pivot_key: &PivotKey) -> StoragePreference {
+        // FIXME
+        self.query_new()
+    }
+
+    pub fn migrate(&self) {
+        todo!()
+    }
+
+    pub fn update(&self) -> Result<()> {
+        let mut mig = self.mig.lock();
+        mig.update()?;
+        Ok(())
+    }
+
+    pub fn config(&self) -> MigrationConfig<()> {
+        todo!()
+    }
+
+    fn main(&self) -> Result<()> {
+        let config = self.config();
+        std::thread::sleep(config.grace_period);
+        let mut migrated = std::time::Instant::now();
+        loop {
+            self.update()?;
+            if migrated.elapsed() > config.update_period {
+                self.migrate();
+                migrated = std::time::Instant::now();
+            }
+            // FIXME: hardwired 1 sec polling
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if self.is_terminated() {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+use std::sync::atomic::Ordering;
+/// Meta-trait which defines a predictive and reactive placement policy for all
+/// data in the storage stack.
+///
+/// All methods of a policy should rely on fine granular locking. Exterior
+/// mutability cannot be used.
+pub trait PlacementPolicy: Send + Sync {
+    /// Stop all background tasks of this policy.
+    fn terminate(&self);
+
+    /// Check if background tasks might be occurring for this policy.
+    fn is_terminated(&self) -> bool;
+
+    /// Return a recommendation whereto place newly created nodes.
+    fn query_new(&self) -> StoragePreference;
+
+    /// Recommendation for new nodes which contain *data*.
+    fn new_data(&self) -> StoragePreference;
+    /// Recommendation for new nodes which contain *metadata*.
+    fn new_meta(&self) -> StoragePreference;
+
+    /// Call to modify an objects position when being the process of a write back.
+    /// This call should never block under *any* circumstances.
+    fn recommend_write_back(&self, pivot_key: &PivotKey) -> StoragePreference;
+
+    /// Check if migration should be done right now.
+    fn migrate(&self);
+    /// Process buffered events.
+    fn update(&self) -> Result<()>;
+
+    /// A main loop, calling whichever regular operations (e.g. migration) might
+    /// be desired by the policy and it's configuration.
+    fn main(&self) -> Result<()> {
+        let config = self.config();
+        std::thread::sleep(config.grace_period);
+        let mut migrated = std::time::Instant::now();
+        loop {
+            self.update()?;
+            if migrated.elapsed() > config.update_period {
+                self.migrate();
+                migrated = std::time::Instant::now();
+            }
+            // FIXME: hardwired 1 sec polling
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if self.is_terminated() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Return a generalized configuration for this policy. Required for the
+    /// generic thread main.
+    fn config(&self) -> MigrationConfig<()>;
+}
+
+/// Spawns a thread running a main function for the given [PlacementPolicy].
+/// This thread is mainly concerned with the automated scan & migrate workflow
+/// but can depending on the policy encompass more than that.
+pub fn spawn_policy(policy: Arc<PlacementPolicyAnatomy>) -> JoinHandle<Result<()>> {
+    std::thread::spawn(move || policy.main())
+}
+
+impl PlacementPolicies {
+    pub(crate) fn construct(
+        &self,
+    ) -> Arc<PlacementPolicyAnatomy> {
+        Arc::new(PlacementPolicyAnatomy::new(self.clone()))
     }
 }
 
@@ -219,71 +426,62 @@ pub(crate) trait MigrationPolicy {
     /// Return the cleaned configuration.
     fn config(&self) -> MigrationConfig<()>;
 
-    /// The main loop of the migration policy.
-    ///
     /// We provide a basic default implementation which may be used or discarded
     /// if desired.
-    fn thread_loop(&mut self) -> Result<()> {
-        std::thread::sleep(self.config().grace_period);
-        loop {
-            // PAUSE
-            std::thread::sleep(self.config().update_period);
-            // Consuming all messages and updating internal state.
-            self.update()?;
+    fn migrate(&mut self) -> Result<()> {
+        use crate::database::StorageInfo;
 
-            use crate::database::StorageInfo;
+        let threshold: Vec<f32> = self
+            .config()
+            .migration_threshold
+            .iter()
+            .map(|val| val.clamp(0.0, 1.0))
+            .collect();
+        let infos: Vec<(u8, StorageInfo)> = (0u8..NUM_STORAGE_CLASSES as u8)
+            .filter_map(|class| {
+                self.dmu()
+                    .handler()
+                    .free_space_tier(class)
+                    .map(|blocks| (class, blocks))
+            })
+            .collect();
 
-            let threshold: Vec<f32> = self
-                .config()
-                .migration_threshold
-                .iter()
-                .map(|val| val.clamp(0.0, 1.0))
-                .collect();
-            let infos: Vec<(u8, StorageInfo)> = (0u8..NUM_STORAGE_CLASSES as u8)
-                .filter_map(|class| {
-                    self.dmu()
-                        .handler()
-                        .free_space_tier(class)
-                        .map(|blocks| (class, blocks))
-                })
-                .collect();
+        for ((high_tier, high_info), (low_tier, _low_info)) in infos
+            .iter()
+            .tuple_windows()
+            .filter(|(_, (_, low_info))| low_info.total != Block(0))
+        {
+            self.promote(
+                *low_tier,
+                high_info.percent_full() >= threshold[*high_tier as usize],
+            )?;
+        }
 
-            for ((high_tier, high_info), (low_tier, _low_info)) in infos
-                .iter()
-                .tuple_windows()
-                .filter(|(_, (_, low_info))| low_info.total != Block(0))
-            {
-                self.promote(
-                    *low_tier,
-                    high_info.percent_full() >= threshold[*high_tier as usize],
-                )?;
-            }
+        // Update after iteration
+        let infos: Vec<(u8, StorageInfo)> = (0u8..NUM_STORAGE_CLASSES as u8)
+            .filter_map(|class| {
+                self.dmu()
+                    .handler()
+                    .free_space_tier(class)
+                    .map(|blocks| (class, blocks))
+            })
+            .collect();
 
-            // Update after iteration
-            let infos: Vec<(u8, StorageInfo)> = (0u8..NUM_STORAGE_CLASSES as u8)
-                .filter_map(|class| {
-                    self.dmu()
-                        .handler()
-                        .free_space_tier(class)
-                        .map(|blocks| (class, blocks))
-                })
-                .collect();
-
-            for ((high_tier, high_info), (_low_tier, _low_info)) in infos
+        for ((high_tier, high_info), (_low_tier, _low_info)) in
+            infos
                 .iter()
                 .tuple_windows()
                 .filter(|((high_tier, high_info), (low_tier, low_info))| {
                     high_info.percent_full() > threshold[*high_tier as usize]
                         && low_info.percent_full() < threshold[*low_tier as usize]
                 })
-            {
-                let desired: Block<u64> = Block(
-                    (high_info.total.as_u64() as f32 * (1.0 - threshold[*high_tier as usize]))
-                        as u64,
-                ) - high_info.free.as_u64();
-                self.demote(*high_tier, desired)?;
-            }
-            self.metrics()?;
+        {
+            let desired: Block<u64> = Block(
+                (high_info.total.as_u64() as f32 * (1.0 - threshold[*high_tier as usize])) as u64,
+            ) - high_info.free.as_u64();
+            self.demote(*high_tier, desired)?;
         }
+        self.metrics()?;
+        Ok(())
     }
 }
