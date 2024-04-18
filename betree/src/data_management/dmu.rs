@@ -66,7 +66,6 @@ impl<E, SPL> Dmu<E, SPL>
 where
     SPL: StoragePoolLayer,
     SPL::Checksum: StaticSize,
-    crate::checksum::XxHash: From<<SPL as StoragePoolLayer>::Checksum>,
 {
     /// Returns a new `Dmu`.
     pub fn new(
@@ -131,8 +130,6 @@ where
     >,
     SPL: StoragePoolLayer,
     SPL::Checksum: StaticSize,
-    crate::storage_pool::StoragePoolUnit<crate::checksum::XxHash>: From<SPL>,
-    crate::checksum::XxHash: From<<SPL as StoragePoolLayer>::Checksum>,
 {
     /// Stealing an [ObjectRef] can have multiple effects.  First, the
     /// corresponding node is moved in cache to the [ObjectKey::Modified] state.
@@ -711,8 +708,6 @@ where
     >,
     SPL: StoragePoolLayer,
     SPL::Checksum: StaticSize,
-    crate::storage_pool::StoragePoolUnit<crate::checksum::XxHash>: From<SPL>,
-    crate::checksum::XxHash: From<<SPL as StoragePoolLayer>::Checksum>,
 {
     type ObjectPointer = ObjectPointer<SPL::Checksum>;
     type ObjectRef = ObjRef<Self::ObjectPointer>;
@@ -1022,8 +1017,6 @@ where
     >,
     SPL: StoragePoolLayer,
     SPL::Checksum: StaticSize,
-    crate::storage_pool::StoragePoolUnit<crate::checksum::XxHash>: From<SPL>,
-    crate::checksum::XxHash: From<<SPL as StoragePoolLayer>::Checksum>,
 {
     type Handler = Handler<ObjRef<ObjectPointer<SPL::Checksum>>>;
 
@@ -1040,8 +1033,6 @@ where
     >,
     SPL: StoragePoolLayer,
     SPL::Checksum: StaticSize,
-    crate::storage_pool::StoragePoolUnit<crate::checksum::XxHash>: From<SPL>,
-    crate::checksum::XxHash: From<<SPL as StoragePoolLayer>::Checksum>,
 {
     fn storage_hints(&self) -> Arc<Mutex<HashMap<PivotKey, StoragePreference>>> {
         Arc::clone(&self.storage_hints)
@@ -1060,8 +1051,6 @@ where
     >,
     SPL: StoragePoolLayer,
     SPL::Checksum: StaticSize,
-    crate::storage_pool::StoragePoolUnit<crate::checksum::XxHash>: From<SPL>,
-    crate::checksum::XxHash: From<<SPL as StoragePoolLayer>::Checksum>,
 {
     fn with_report(mut self, tx: Sender<DmlMsg>) -> Self {
         self.report_tx = Some(tx);
