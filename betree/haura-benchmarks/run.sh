@@ -209,8 +209,7 @@ function ci() {
 }
 
 function ycsb() {
-  run "$RUN_IDENT" ycsb_c_block ycsb-c "$((8 * 1024 * 1024 * 1024))" 0 8
-  run "$RUN_IDENT" ycsb_c_memory ycsb-c "$((8 * 1024 * 1024 * 1024))" 1 8
+  run "$RUN_IDENT" ycsb_c ycsb-c "$((8 * 1024 * 1024 * 1024))" 8
 }
 
 cargo build --release
