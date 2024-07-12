@@ -684,7 +684,7 @@ mod internal;
 mod leaf;
 mod node;
 mod nvm_child_buffer;
-mod nvminternal;
+mod disjoint_internal;
 mod nvmleaf;
 mod packed;
 mod range;
