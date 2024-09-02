@@ -85,3 +85,4 @@ figment_config = ["figment"]
 # therefore safeguarded into it's own feature
 latency_metrics = []
 nvm = ["pmdk"]
+cache-paranoia = []
