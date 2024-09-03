@@ -425,80 +425,18 @@ where
     ) -> Result<Option<(KeyInfo, SlicedCowBytes)>, Error> {
         let key = key.borrow();
         let mut msgs = Vec::new();
-        let mut prefetch_queue = vec![];
-
-        enum Event<N> {
-            Fetching(N),
-            Done,
-        }
-
-        let mut unordered_msgs = Vec::new();
-
         let mut node = self.get_root_node()?;
-
-        if node.level() != 0 {
-            println!("fetch data");
-            println!(
-                "root fanout {:?}, root lvl: {:?}",
-                node.fanout(),
-                node.level()
-            );
-        }
-
         let data = loop {
-            let mut prefetching = false;
-            let next_node = match node.get(key, &mut unordered_msgs) {
+            let next_node = match node.get(key, &mut msgs) {
                 GetResult::NextNode(np) => self.get_node(np)?,
                 GetResult::Data(data) => break data,
-                GetResult::NVMNextNode { child, buffer } => {
-                    if let Some(prefetch) = self.dml.prefetch(&buffer.read()).unwrap() {
-                        prefetch_queue.push(Event::Fetching(prefetch));
-                        prefetching = true;
-                    }
-                    if !prefetching {
-                        let buffer = self.get_node(buffer)?;
-                        buffer.get(key, &mut unordered_msgs);
-                    }
-                    self.get_node(child)?
-                }
-
             };
-            if !prefetching {
-                prefetch_queue.push(Event::Done);
-            }
             node = next_node;
         };
 
         match data {
             None => Ok(None),
             Some((info, data)) => {
-                let mut tmp = Some(data);
-
-                // Since due to possible prefetching we don't know if the
-                // messages are in the correct order we reorder them at this
-                // point.
-                let mut offline_msgs = VecDeque::from(unordered_msgs);
-                for prefetch in prefetch_queue.into_iter() {
-                    match prefetch {
-                        Event::Fetching(prefetch) => {
-                            let buffer = self.dml.finish_prefetch(prefetch).unwrap();
-                            let _ = buffer.get(key, &mut msgs);
-                        }
-                        Event::Done => {
-                            if let Some(msg) = offline_msgs.pop_front() {
-                                msgs.push(msg);
-                            }
-                        }
-                    }
-                }
-
-                for (_keyinfo, msg) in msgs.into_iter().rev() {
-                    self.msg_action().apply(key, &msg, &mut tmp);
-                }
-
-                // This may never be false.
-                let data = tmp.unwrap();
-
                 drop(node);
                 if self.evict {
                     self.dml.evict()?;
