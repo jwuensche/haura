@@ -437,6 +437,13 @@ where
         match data {
             None => Ok(None),
             Some((info, data)) => {
+                let mut tmp = Some(data);
+                for (_keyinfo, msg) in msgs.into_iter().rev() {
+                    self.msg_action().apply(key, &msg, &mut tmp);
+                }
+                // This may never be false.
+                let data = tmp.unwrap();
+
                 drop(node);
                 if self.evict {
                     self.dml.evict()?;
@@ -544,12 +551,7 @@ where
         };
 
         let op_preference = storage_preference.or(self.storage_preference);
-        let added_size = node.insert(
-            key,
-            msg,
-            self.msg_action(),
-            op_preference,
-        );
+        let added_size = node.insert(key, msg, self.msg_action(), op_preference);
         node.add_size(added_size);
 
         if parent.is_none() && node.root_needs_merge() {
