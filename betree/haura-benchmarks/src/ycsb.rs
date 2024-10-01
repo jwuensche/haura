@@ -5,7 +5,7 @@
 use betree_perf::KvClient;
 use rand::distributions::Distribution;
 use rand::prelude::SliceRandom;
-use rand::SeedableRng;
+use rand::{SeedableRng, Rng};
 use std::io::Write;
 
 // Default in YCSB, 10 x 100 bytes field in one struct.
@@ -13,12 +13,12 @@ const ENTRY_SIZE: usize = 1000;
 // Default of YCSB
 const ZIPF_EXP: f64 = 0.99;
 
-/// C - Read heavy
-/// Operations: Read 100%
+/// Operations: Read/Write
 /// Distribution: Zipfian
-/// Application example: User profile cache, where profiles are constructed elsewhere (e.g., Hadoop)
-pub fn c(mut client: KvClient, size: u64, threads: usize, runtime: u64) {
-    println!("Running YCSB Workload C");
+/// Access Size: 1000 bytes
+pub fn run(mut client: KvClient, size: u64, threads: usize, runtime: u64, ratio: f64, id: &str) {
+    println!("Running YCSB Workload");
+    println!("Threads: {threads}\t Runtime: {runtime}s\t R/W ratio: {ratio}");
     println!("Filling KV store...");
     let mut keys = client.fill_entries(size / ENTRY_SIZE as u64, ENTRY_SIZE as u32);
     keys.shuffle(client.rng());
@@ -26,7 +26,7 @@ pub fn c(mut client: KvClient, size: u64, threads: usize, runtime: u64) {
     let f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .open(format!("ycsb_c.csv"))
+        .open(format!("ycsb_{id}.csv"))
         .unwrap();
     let mut w = std::io::BufWriter::new(f);
     w.write_all(b"threads,ops,time_ns\n").unwrap();
@@ -43,13 +43,18 @@ pub fn c(mut client: KvClient, size: u64, threads: usize, runtime: u64) {
                     std::thread::spawn(move || {
                         let mut rng = rand_xoshiro::Xoshiro256Plus::seed_from_u64(id as u64);
                         let dist = zipf::ZipfDistribution::new(keys.len(), ZIPF_EXP).unwrap();
+                        let buf = vec![1; ENTRY_SIZE];
                         let mut total = 0;
                         while let Ok(start) = rx.recv() {
                             while start.elapsed().as_secs() < runtime {
                                 for _ in 0..100 {
-                                    ds.get(&keys[dist.sample(&mut rng) - 1][..])
-                                        .unwrap()
-                                        .unwrap();
+                                    if rng.gen_bool(ratio) {
+                                        ds.get(&keys[dist.sample(&mut rng) - 1][..])
+                                            .unwrap()
+                                            .unwrap();
+                                    } else {
+                                        ds.insert(&keys[dist.sample(&mut rng) - 1][..], &buf);
+                                    }
                                     total += 1;
                                 }
                             }

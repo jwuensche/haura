@@ -67,6 +67,18 @@ enum Mode {
         #[structopt(default_value = "120")]
         runtime: u64,
     },
+    YcsbA {
+        size: u64,
+        threads: u32,
+        #[structopt(default_value = "120")]
+        runtime: u64,
+    },
+    YcsbB {
+        size: u64,
+        threads: u32,
+        #[structopt(default_value = "120")]
+        runtime: u64,
+    },
 }
 
 fn run_all(mode: Mode) -> Result<(), Box<dyn Error>> {
@@ -175,7 +187,23 @@ fn run_all(mode: Mode) -> Result<(), Box<dyn Error>> {
             runtime,
         } => {
             let client = control.kv_client(0);
-            ycsb::c(client, size, threads as usize, runtime)
+            ycsb::run(client, size, threads as usize, runtime, 1.0, "c")
+        }
+        Mode::YcsbA {
+            size,
+            threads,
+            runtime,
+        } => {
+            let client = control.kv_client(0);
+            ycsb::run(client, size, threads as usize, runtime, 0.5, "a")
+        }
+        Mode::YcsbB {
+            size,
+            threads,
+            runtime,
+        } => {
+            let client = control.kv_client(0);
+            ycsb::run(client, size, threads as usize, runtime, 0.95, "b")
         }
     }
 
